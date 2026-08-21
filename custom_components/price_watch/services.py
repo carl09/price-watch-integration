@@ -106,7 +106,11 @@ async def _async_check_all(hass: HomeAssistant, call: ServiceCall) -> None:
     except PriceWatchTransportError as err:
         raise HomeAssistantError("Price Watch service is unavailable") from err
     except PriceWatchInvalidResponseError as err:
-        raise HomeAssistantError("Price Watch service returned invalid data") from err
+        detail = str(err)
+        message = "Price Watch service returned invalid data"
+        if detail:
+            message = f"{message} ({detail})"
+        raise HomeAssistantError(message) from err
     await coordinator.async_request_refresh()
 
 

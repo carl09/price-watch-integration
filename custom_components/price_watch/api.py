@@ -277,11 +277,15 @@ class PriceWatchApiClient:
                     if response.status in {401, 403}:
                         raise PriceWatchAuthenticationError
                     if response.status != 200:
-                        raise PriceWatchInvalidResponseError
+                        raise PriceWatchInvalidResponseError(
+                            f"HTTP {response.status}"
+                        )
                     try:
                         return await response.json(content_type=None)
                     except (aiohttp.ClientError, TypeError, ValueError) as err:
-                        raise PriceWatchInvalidResponseError from err
+                        raise PriceWatchInvalidResponseError(
+                            "non-JSON response"
+                        ) from err
         except TimeoutError as err:
             raise PriceWatchTimeoutError from err
         except aiohttp.ClientError as err:
@@ -307,11 +311,15 @@ class PriceWatchApiClient:
                     if response.status in {401, 403}:
                         raise PriceWatchAuthenticationError
                     if response.status != 200:
-                        raise PriceWatchInvalidResponseError
+                        raise PriceWatchInvalidResponseError(
+                            f"HTTP {response.status}"
+                        )
                     try:
                         return await response.json(content_type=None)
                     except (aiohttp.ClientError, TypeError, ValueError) as err:
-                        raise PriceWatchInvalidResponseError from err
+                        raise PriceWatchInvalidResponseError(
+                            "non-JSON response"
+                        ) from err
         except TimeoutError as err:
             raise PriceWatchTimeoutError from err
         except aiohttp.ClientError as err:
@@ -337,11 +345,15 @@ class PriceWatchApiClient:
                     if response.status in {401, 403}:
                         raise PriceWatchAuthenticationError
                     if response.status != 200:
-                        raise PriceWatchInvalidResponseError
+                        raise PriceWatchInvalidResponseError(
+                            f"HTTP {response.status}"
+                        )
                     try:
                         payload = await response.json(content_type=None)
                     except (aiohttp.ClientError, TypeError, ValueError) as err:
-                        raise PriceWatchInvalidResponseError from err
+                        raise PriceWatchInvalidResponseError(
+                            "non-JSON response"
+                        ) from err
         except TimeoutError as err:
             raise PriceWatchTimeoutError from err
         except aiohttp.ClientError as err:
