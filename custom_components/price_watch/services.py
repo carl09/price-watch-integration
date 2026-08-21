@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from functools import partial
+
 import voluptuous as vol
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError
@@ -33,12 +35,14 @@ from .coordinator import PriceWatchCoordinator
 def async_register_services(hass: HomeAssistant) -> None:
     """Register manual-check actions once for the integration domain."""
     if not hass.services.has_service(DOMAIN, SERVICE_CHECK_ALL):
-        hass.services.async_register(DOMAIN, SERVICE_CHECK_ALL, _async_check_all)
+        hass.services.async_register(
+            DOMAIN, SERVICE_CHECK_ALL, partial(_async_check_all, hass)
+        )
     if not hass.services.has_service(DOMAIN, SERVICE_CHECK_WATCH):
         hass.services.async_register(
             DOMAIN,
             SERVICE_CHECK_WATCH,
-            _async_check_watch,
+            partial(_async_check_watch, hass),
             schema=vol.Schema(
                 {vol.Required(ATTR_WATCH_ID): vol.All(str, vol.Length(min=1))}
             ),
@@ -47,7 +51,7 @@ def async_register_services(hass: HomeAssistant) -> None:
         hass.services.async_register(
             DOMAIN,
             SERVICE_SET_ENABLED,
-            _async_set_enabled,
+            partial(_async_set_enabled, hass),
             schema=vol.Schema(
                 {
                     vol.Required(ATTR_WATCH_ID): vol.All(str, vol.Length(min=1)),
@@ -62,7 +66,7 @@ def async_register_services(hass: HomeAssistant) -> None:
         hass.services.async_register(
             DOMAIN,
             SERVICE_ADD_TO_SHOPPING_LIST,
-            _async_add_to_shopping_list,
+            partial(_async_add_to_shopping_list, hass),
             schema=vol.Schema(
                 {vol.Required(ATTR_WATCH_ID): vol.All(str, vol.Length(min=1))}
             ),
@@ -90,9 +94,9 @@ def _runtime(hass: HomeAssistant) -> tuple[PriceWatchApiClient, PriceWatchCoordi
     return client, coordinator
 
 
-async def _async_check_all(call: ServiceCall) -> None:
+async def _async_check_all(hass: HomeAssistant, call: ServiceCall) -> None:
     """Run due watches, then request an entity refresh."""
-    client, coordinator = _runtime(call.hass)
+    client, coordinator = _runtime(hass)
     try:
         await client.async_check_all()
     except PriceWatchAuthenticationError as err:
@@ -106,9 +110,9 @@ async def _async_check_all(call: ServiceCall) -> None:
     await coordinator.async_request_refresh()
 
 
-async def _async_check_watch(call: ServiceCall) -> None:
+async def _async_check_watch(hass: HomeAssistant, call: ServiceCall) -> None:
     """Run one watch, then request an entity refresh."""
-    client, coordinator = _runtime(call.hass)
+    client, coordinator = _runtime(hass)
     try:
         await client.async_check_watch(call.data[ATTR_WATCH_ID])
     except PriceWatchAuthenticationError as err:
@@ -122,9 +126,9 @@ async def _async_check_watch(call: ServiceCall) -> None:
     await coordinator.async_request_refresh()
 
 
-async def _async_set_enabled(call: ServiceCall) -> None:
+async def _async_set_enabled(hass: HomeAssistant, call: ServiceCall) -> None:
     """Set one watch's enabled state, then request an entity refresh."""
-    client, coordinator = _runtime(call.hass)
+    client, coordinator = _runtime(hass)
     try:
         await client.async_set_enabled(
             call.data[ATTR_WATCH_ID],
@@ -141,10 +145,12 @@ async def _async_set_enabled(call: ServiceCall) -> None:
     await coordinator.async_request_refresh()
 
 
-async def _async_add_to_shopping_list(call: ServiceCall) -> None:
+async def _async_add_to_shopping_list(
+    hass: HomeAssistant, call: ServiceCall
+) -> None:
     """Add a selected coordinator watch to Home Assistant's Shopping List."""
-    _, coordinator = _runtime(call.hass)
-    if not call.hass.services.has_service(
+    _, coordinator = _runtime(hass)
+    if not hass.services.has_service(
         SHOPPING_LIST_DOMAIN, SHOPPING_LIST_ADD_ITEM
     ):
         raise HomeAssistantError("Shopping List is unavailable")
@@ -175,7 +181,7 @@ async def _async_add_to_shopping_list(call: ServiceCall) -> None:
         )
     parts.append(watch.product_url)
     try:
-        await call.hass.services.async_call(
+        await hass.services.async_call(
             SHOPPING_LIST_DOMAIN,
             SHOPPING_LIST_ADD_ITEM,
             {SHOPPING_LIST_ITEM_NAME: " - ".join(parts)},
