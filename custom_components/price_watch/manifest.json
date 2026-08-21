@@ -1,0 +1,12 @@
+{
+  "domain": "price_watch",
+  "name": "Price Watch",
+  "version": "0.0.0",
+  "codeowners": ["@carl09"],
+  "documentation": "https://github.com/carl09/price-watch-integration",
+  "issue_tracker": "https://github.com/carl09/price-watch-integration/issues",
+  "integration_type": "service",
+  "iot_class": "local_polling",
+  "config_flow": true,
+  "requirements": []
+}

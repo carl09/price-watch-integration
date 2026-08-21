@@ -1,0 +1,39 @@
+check_all:
+  name: Check due watches
+  description: Request an immediate check for all Price Watch watches that are due.
+check_watch:
+  name: Check watch
+  description: Request an immediate check for one Price Watch watch.
+  fields:
+    watch_id:
+      name: Watch ID
+      description: Immutable Price Watch watch ID.
+      required: true
+      selector:
+        text:
+set_enabled:
+  name: Set watch enabled state
+  description: Enable or disable one Price Watch watch.
+  fields:
+    watch_id:
+      name: Watch ID
+      description: Immutable Price Watch watch ID.
+      required: true
+      selector:
+        text:
+    enabled:
+      name: Enabled
+      description: Whether Price Watch should schedule checks for this watch.
+      required: true
+      selector:
+        boolean:
+add_to_shopping_list:
+  name: Add watch to Shopping List
+  description: Add the current watch details to Home Assistant's Shopping List.
+  fields:
+    watch_id:
+      name: Watch ID
+      description: Immutable Price Watch watch ID.
+      required: true
+      selector:
+        text:

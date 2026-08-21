@@ -1,0 +1,32 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect Price Watch",
+        "description": "Enter the URL and scoped API token for your private Price Watch service.",
+        "data": {
+          "base_url": "Price Watch URL",
+          "api_token": "API token"
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigure Price Watch",
+        "data": {
+          "base_url": "Price Watch URL",
+          "api_token": "API token"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "The API token was rejected.",
+      "cannot_connect": "Cannot connect to the Price Watch service.",
+      "timeout": "The Price Watch service did not respond in time.",
+      "invalid_response": "The Price Watch service returned an invalid health response.",
+      "invalid_url": "Enter an HTTP(S) URL without credentials, query parameters or fragments."
+    },
+    "abort": {
+      "single_instance_allowed": "Only one Price Watch service can be configured until the API exposes a stable service instance ID.",
+      "reconfigure_successful": "Price Watch was reconfigured successfully."
+    }
+  }
+}
