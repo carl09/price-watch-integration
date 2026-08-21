@@ -217,12 +217,15 @@ class PriceWatchApiClient:
             raise PriceWatchInvalidResponseError
         return tuple(self._parse_event(item) for item in payload["data"])
 
-    async def async_check_all(self) -> tuple[PriceWatchCheckResult, ...]:
-        """Run due watches with a new idempotency key."""
-        payload = await self._async_post_json(CHECKS_PATH, str(uuid4()))
-        if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
-            raise PriceWatchInvalidResponseError
-        return tuple(self._parse_check_result(item) for item in payload["data"])
+    async def async_check_all(self) -> None:
+        """Run due watches with a new idempotency key.
+
+        The Home Assistant action only needs the request to complete; the
+        coordinator refresh immediately afterwards fetches the authoritative
+        watch state. Do not reject a successful check because its per-watch
+        response body is not needed by the action.
+        """
+        await self._async_post_json(CHECKS_PATH, str(uuid4()))
 
     async def async_check_watch(self, watch_id: str) -> PriceWatchCheckResult:
         """Run one watch with a new idempotency key."""
