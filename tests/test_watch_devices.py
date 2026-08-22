@@ -100,6 +100,12 @@ async def _setup_entry(hass, watches: tuple[PriceWatchWatch, ...]):
     return config_entry
 
 
+async def _unload_entry(hass, config_entry) -> None:
+    """Unload each test entry before the HA harness checks resource cleanup."""
+    assert await hass.config_entries.async_unload(config_entry.entry_id)
+    await hass.async_block_till_done()
+
+
 def _entity_id(entity_registry, platform: str, unique_id: str) -> str:
     entity_id = entity_registry.async_get_entity_id(platform, DOMAIN, unique_id)
     assert entity_id is not None
@@ -144,13 +150,14 @@ async def test_watch_id_creates_stable_device_and_existing_price_entity(hass):
         == device.id
     )
     assert _entity_id(entity_registry, "sensor", "watch_watch-one") == price_entity_id
+    await _unload_entry(hass, entry)
 
 
 async def test_two_watches_create_distinct_devices_and_linked_entities(hass):
     """Every useful per-watch entity belongs to its corresponding device."""
     first = _watch("watch-one")
     second = _watch("watch-two", title="Second Shorts")
-    await _setup_entry(hass, (first, second))
+    entry = await _setup_entry(hass, (first, second))
     device_registry = dr.async_get(hass)
     entity_registry = er.async_get(hass)
 
@@ -174,6 +181,7 @@ async def test_two_watches_create_distinct_devices_and_linked_entities(hass):
             entity = entity_registry.async_get(entity_id)
             assert entity is not None
             assert entity.device_id == device.id
+    await _unload_entry(hass, entry)
 
 
 async def test_missing_watch_becomes_unavailable_without_removing_its_device(hass):
@@ -196,12 +204,13 @@ async def test_missing_watch_becomes_unavailable_without_removing_its_device(has
     assert (
         device_registry.async_get_device(identifiers={(DOMAIN, watch.id)}) is not None
     )
+    await _unload_entry(hass, entry)
 
 
 async def test_disabled_watch_retains_its_device_and_safe_primary_attributes(hass):
     """Disabled watches remain stable devices instead of being recreated."""
     watch = _watch("watch-one", enabled=False)
-    await _setup_entry(hass, (watch,))
+    entry = await _setup_entry(hass, (watch,))
     entity_registry = er.async_get(hass)
     price_entity_id = _entity_id(entity_registry, "sensor", "watch_watch-one")
 
@@ -210,3 +219,4 @@ async def test_disabled_watch_retains_its_device_and_safe_primary_attributes(has
     assert state.attributes["enabled"] is False
     assert state.attributes["retailer_variant_id"] == "48573064806635"
     assert "redacted-test-token" not in str(state.attributes)
+    await _unload_entry(hass, entry)

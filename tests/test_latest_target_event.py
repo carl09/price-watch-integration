@@ -79,9 +79,15 @@ async def setup_entry(hass, events: tuple[PriceWatchEvent, ...]):
     return config_entry
 
 
+async def unload_entry(hass, config_entry) -> None:
+    """Unload each test entry before the HA harness checks resource cleanup."""
+    assert await hass.config_entries.async_unload(config_entry.entry_id)
+    await hass.async_block_till_done()
+
+
 async def test_latest_target_event_is_none_when_no_target_events_exist(hass):
     """No target event produces no synthetic event state or attributes."""
-    await setup_entry(
+    config_entry = await setup_entry(
         hass,
         (
             event(
@@ -97,11 +103,12 @@ async def test_latest_target_event_is_none_when_no_target_events_exist(hass):
     assert state is not None
     assert state.state == "none"
     assert set(state.attributes) == {"friendly_name"}
+    await unload_entry(hass, config_entry)
 
 
 async def test_latest_target_event_exposes_only_safe_event_fields(hass):
     """One target event uses its immutable ID and an allow-listed data field."""
-    await setup_entry(
+    config_entry = await setup_entry(
         hass,
         (
             event(
@@ -129,11 +136,12 @@ async def test_latest_target_event_exposes_only_safe_event_fields(hass):
     }
     assert "redacted-test-token" not in state.state
     assert "unapproved_data" not in state.attributes
+    await unload_entry(hass, config_entry)
 
 
 async def test_latest_target_event_selects_newest_target_event(hass):
     """Later non-target events cannot displace the latest target event."""
-    await setup_entry(
+    config_entry = await setup_entry(
         hass,
         (
             event("event-old", "2026-08-22T07:00:00.000Z"),
@@ -150,6 +158,7 @@ async def test_latest_target_event_selects_newest_target_event(hass):
 
     assert state is not None
     assert state.state == "event-new"
+    await unload_entry(hass, config_entry)
 
 
 async def test_unchanged_target_event_id_does_not_update_state(hass):
@@ -177,6 +186,7 @@ async def test_unchanged_target_event_id_does_not_update_state(hass):
     assert after is not None
     assert after.state == "event-target"
     assert after.last_changed == before.last_changed
+    await unload_entry(hass, config_entry)
 
 
 async def test_latest_target_event_is_unavailable_after_refresh_failure(hass):
@@ -198,3 +208,4 @@ async def test_latest_target_event_is_unavailable_after_refresh_failure(hass):
     state = hass.states.get("sensor.price_watch_latest_target_event")
     assert state is not None
     assert state.state == STATE_UNAVAILABLE
+    await unload_entry(hass, config_entry)

@@ -75,10 +75,14 @@ def async_register_services(hass: HomeAssistant) -> None:
 
 def async_unregister_services(hass: HomeAssistant) -> None:
     """Remove Price Watch actions after the final entry unloads."""
-    hass.services.async_remove(DOMAIN, SERVICE_CHECK_ALL)
-    hass.services.async_remove(DOMAIN, SERVICE_CHECK_WATCH)
-    hass.services.async_remove(DOMAIN, SERVICE_SET_ENABLED)
-    hass.services.async_remove(DOMAIN, SERVICE_ADD_TO_SHOPPING_LIST)
+    for service in (
+        SERVICE_CHECK_ALL,
+        SERVICE_CHECK_WATCH,
+        SERVICE_SET_ENABLED,
+        SERVICE_ADD_TO_SHOPPING_LIST,
+    ):
+        if hass.services.has_service(DOMAIN, service):
+            hass.services.async_remove(DOMAIN, service)
 
 
 def _runtime(hass: HomeAssistant) -> tuple[PriceWatchApiClient, PriceWatchCoordinator]:
