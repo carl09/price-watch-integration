@@ -273,6 +273,7 @@ class PriceWatchApiClient:
                         "Authorization": f"Bearer {self._api_token}",
                         "Idempotency-Key": idempotency_key,
                     },
+                    json={},
                 ) as response:
                     if response.status in {401, 403}:
                         raise PriceWatchAuthenticationError
