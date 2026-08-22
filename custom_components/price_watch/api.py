@@ -75,6 +75,14 @@ class PriceWatchCurrentObservation:
 
 
 @dataclass(frozen=True)
+class PriceWatchVariant:
+    """Validated exact service variant selector."""
+
+    retailer_variant_id: str | None
+    options: dict[str, str] | None
+
+
+@dataclass(frozen=True)
 class PriceWatchWatch:
     """Validated watch state returned by the Price Watch API."""
 
@@ -82,6 +90,7 @@ class PriceWatchWatch:
     retailer_id: str
     product_url: str
     title: str
+    variant: PriceWatchVariant
     enabled: bool
     target_price_cents: int | None
     check_interval_minutes: int
@@ -371,6 +380,29 @@ class PriceWatchApiClient:
             raise PriceWatchInvalidResponseError
         if not isinstance(value.get("enabled"), bool):
             raise PriceWatchInvalidResponseError
+        variant = value.get("variant")
+        if not isinstance(variant, dict):
+            raise PriceWatchInvalidResponseError
+        retailer_variant_id = variant.get("retailer_variant_id")
+        options = variant.get("options")
+        if retailer_variant_id is not None and (
+            not isinstance(retailer_variant_id, str) or not retailer_variant_id
+        ):
+            raise PriceWatchInvalidResponseError
+        if options is not None and (
+            not isinstance(options, dict)
+            or not options
+            or not all(
+                isinstance(key, str)
+                and key
+                and isinstance(option, str)
+                and option
+                for key, option in options.items()
+            )
+        ):
+            raise PriceWatchInvalidResponseError
+        if retailer_variant_id is None and options is None:
+            raise PriceWatchInvalidResponseError
         interval = value.get("check_interval_minutes")
         if not isinstance(interval, int) or interval <= 0:
             raise PriceWatchInvalidResponseError
@@ -394,6 +426,10 @@ class PriceWatchApiClient:
             retailer_id=value["retailer_id"],
             product_url=value["product_url"],
             title=value["title"],
+            variant=PriceWatchVariant(
+                retailer_variant_id=retailer_variant_id,
+                options=options,
+            ),
             enabled=value["enabled"],
             target_price_cents=target,
             check_interval_minutes=interval,

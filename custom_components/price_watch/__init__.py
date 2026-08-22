@@ -11,6 +11,7 @@ from .api import PriceWatchApiClient
 from .const import (
     CONF_API_TOKEN,
     CONF_BASE_URL,
+    DATA_BINARY_SENSOR_MANAGERS,
     DATA_CLIENTS,
     DATA_COORDINATORS,
     DATA_SENSOR_MANAGERS,
@@ -58,6 +59,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     clients = domain_data.get(DATA_CLIENTS)
     coordinators = domain_data.get(DATA_COORDINATORS)
     sensor_managers = domain_data.get(DATA_SENSOR_MANAGERS)
+    binary_sensor_managers = domain_data.get(DATA_BINARY_SENSOR_MANAGERS)
     if clients is not None:
         clients.pop(entry.entry_id, None)
     if coordinators is not None:
@@ -66,12 +68,17 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         manager = sensor_managers.pop(entry.entry_id, None)
         if manager is not None:
             manager.stop()
+    if binary_sensor_managers is not None:
+        manager = binary_sensor_managers.pop(entry.entry_id, None)
+        if manager is not None:
+            manager.stop()
     if not domain_data.get(DATA_CLIENTS):
         async_unregister_services(hass)
     if (
         not domain_data.get(DATA_CLIENTS)
         and not domain_data.get(DATA_COORDINATORS)
         and not domain_data.get(DATA_SENSOR_MANAGERS)
+        and not domain_data.get(DATA_BINARY_SENSOR_MANAGERS)
     ):
         hass.data.pop(DOMAIN)
     return True

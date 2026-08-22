@@ -31,12 +31,31 @@ The token is stored in the Home Assistant config entry. It is not placed in YAML
 ## Supported capabilities
 
 - Authenticated setup and reconfiguration
-- Summary, target-status, and dynamic watch entities
+- Summary, target-status, and dynamic watch devices/entities
 - Latest immutable target-event entity for notification automations
 - Refresh and enable/disable watch actions
 - Shopping List support when that Home Assistant capability is available
 
 The integration only calls the configured Price Watch API. It does not scrape retailer sites, access the service database, or expose the service token to a dashboard card.
+
+## Watch devices and entities
+
+Each Price Watch is represented by one Home Assistant Device, identified
+permanently by its service `watch_id`. Changing a title, URL, retailer display
+name, or selected variant cannot create a second device.
+
+The existing current-price sensor remains the primary entity with its current
+entity and unique IDs. The device also groups target price, target match,
+current status, and last-observation timestamp entities. Selected variant,
+retailer variant ID, product URL, raw error code, and related low-level facts
+remain safe attributes of the primary price sensor. Enabled remains a primary
+sensor attribute; use the existing `price_watch.set_enabled` action to change
+it.
+
+Removed watches become unavailable rather than being deleted and recreated.
+This preserves Home Assistant history and device registry identity while
+avoiding presentation of an old price as current. No manual migration is
+required; devices are created from the next successful coordinator refresh.
 
 ## Target-event notifications
 

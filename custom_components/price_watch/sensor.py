@@ -7,8 +7,10 @@ from decimal import Decimal
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util import dt as dt_util
 
 from .api import PriceWatchEvent, PriceWatchWatch
 from .const import DATA_COORDINATORS, DATA_SENSOR_MANAGERS, DOMAIN
@@ -124,25 +126,22 @@ class PriceWatchLatestTargetEventSensor(
         return attributes
 
 
-class PriceWatchWatchSensor(CoordinatorEntity[PriceWatchCoordinator], SensorEntity):
-    """Expose a single watch from the coordinator's initial snapshot."""
-
-    _attr_device_class = SensorDeviceClass.MONETARY
-    _attr_native_unit_of_measurement = "AUD"
+class PriceWatchWatchEntity(CoordinatorEntity[PriceWatchCoordinator]):
+    """Share stable device identity and coordinator lookup across watch entities."""
 
     def __init__(self, coordinator: PriceWatchCoordinator, watch: PriceWatchWatch) -> None:
+        """Capture immutable entity/device identity from the initial snapshot."""
         super().__init__(coordinator)
         self._watch_id = watch.id
-        self._attr_unique_id = f"watch_{watch.id}"
-        label = (
+        self._initial_title = watch.title
+        self._initial_variant_label = (
             watch.current_observation.selected_variant_label
             if watch.current_observation is not None
             else None
         )
-        self._attr_name = f"{watch.title} ({label})" if label else watch.title
 
     def _watch(self) -> PriceWatchWatch | None:
-        """Return this entity's watch from the latest coordinator snapshot."""
+        """Return this watch from the latest shared coordinator snapshot."""
         if self.coordinator.data is None:
             return None
         return next(
@@ -153,6 +152,47 @@ class PriceWatchWatchSensor(CoordinatorEntity[PriceWatchCoordinator], SensorEnti
             ),
             None,
         )
+
+    @property
+    def available(self) -> bool:
+        """Mark removed watches unavailable without removing their registry entry."""
+        return super().available and self._watch() is not None
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Group watch entities by the immutable Price Watch ID."""
+        watch = self._watch()
+        title = watch.title if watch is not None else self._initial_title
+        observation = watch.current_observation if watch is not None else None
+        variant_label = (
+            observation.selected_variant_label
+            if observation is not None
+            else self._initial_variant_label
+        )
+        return DeviceInfo(
+            identifiers={(DOMAIN, self._watch_id)},
+            name=f"{title} ({variant_label})" if variant_label else title,
+            manufacturer="Price Watch",
+            model=watch.retailer_id if watch is not None else None,
+            configuration_url=watch.product_url if watch is not None else None,
+        )
+
+
+class PriceWatchWatchSensor(PriceWatchWatchEntity, SensorEntity):
+    """Expose the existing current-price sensor for a single watch."""
+
+    _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_native_unit_of_measurement = "AUD"
+
+    def __init__(self, coordinator: PriceWatchCoordinator, watch: PriceWatchWatch) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"watch_{watch.id}"
+        label = (
+            watch.current_observation.selected_variant_label
+            if watch.current_observation is not None
+            else None
+        )
+        self._attr_name = f"{watch.title} ({label})" if label else watch.title
 
     @property
     def native_value(self) -> Decimal | None:
@@ -178,6 +218,7 @@ class PriceWatchWatchSensor(CoordinatorEntity[PriceWatchCoordinator], SensorEnti
             "watch_id": watch.id,
             "retailer_id": watch.retailer_id,
             "product_url": watch.product_url,
+            "retailer_variant_id": watch.variant.retailer_variant_id,
             "selected_variant_label": (
                 observation.selected_variant_label if observation is not None else None
             ),
@@ -195,6 +236,66 @@ class PriceWatchWatchSensor(CoordinatorEntity[PriceWatchCoordinator], SensorEnti
         return attributes
 
 
+class PriceWatchTargetPriceSensor(PriceWatchWatchEntity, SensorEntity):
+    """Expose a meaningful configured target price for one watch."""
+
+    _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_native_unit_of_measurement = "AUD"
+
+    def __init__(self, coordinator: PriceWatchCoordinator, watch: PriceWatchWatch) -> None:
+        """Set a stable target-price entity identity."""
+        super().__init__(coordinator, watch)
+        self._attr_unique_id = f"watch_{watch.id}_target_price"
+        self._attr_name = f"{watch.title} Target Price"
+
+    @property
+    def native_value(self) -> Decimal | None:
+        """Return the configured target in AUD, if one exists."""
+        watch = self._watch()
+        if watch is None or watch.target_price_cents is None:
+            return None
+        return Decimal(watch.target_price_cents) / Decimal(100)
+
+
+class PriceWatchStatusSensor(PriceWatchWatchEntity, SensorEntity):
+    """Expose the current service-produced observation status."""
+
+    def __init__(self, coordinator: PriceWatchCoordinator, watch: PriceWatchWatch) -> None:
+        """Set a stable status entity identity."""
+        super().__init__(coordinator, watch)
+        self._attr_unique_id = f"watch_{watch.id}_status"
+        self._attr_name = f"{watch.title} Status"
+
+    @property
+    def native_value(self) -> str | None:
+        """Return the authoritative selected-variant observation status."""
+        watch = self._watch()
+        if watch is None or watch.current_observation is None:
+            return None
+        return watch.current_observation.status
+
+
+class PriceWatchLastCheckedSensor(PriceWatchWatchEntity, SensorEntity):
+    """Expose the current observation timestamp without another API call."""
+
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+
+    def __init__(self, coordinator: PriceWatchCoordinator, watch: PriceWatchWatch) -> None:
+        """Set a stable last-observation entity identity."""
+        super().__init__(coordinator, watch)
+        self._attr_unique_id = f"watch_{watch.id}_last_checked"
+        self._attr_name = f"{watch.title} Last Checked"
+
+    @property
+    def native_value(self):
+        """Return the service observation time as a Home Assistant timestamp."""
+        watch = self._watch()
+        observation = watch.current_observation if watch is not None else None
+        if observation is None:
+            return None
+        return dt_util.parse_datetime(observation.checked_at)
+
+
 class PriceWatchSensorManager:
     """Create one persistent entity for each watch discovered by the coordinator."""
 
@@ -210,7 +311,7 @@ class PriceWatchSensorManager:
             self._handle_coordinator_update
         )
 
-    def add_new_watch_sensors(self) -> list[PriceWatchWatchSensor]:
+    def add_new_watch_sensors(self) -> list[SensorEntity]:
         """Return sensors for watches not previously seen by this entry."""
         if self._coordinator.data is None:
             return []
@@ -220,9 +321,17 @@ class PriceWatchSensorManager:
             if watch.id not in self._watch_ids
         ]
         self._watch_ids.update(watch.id for watch in new_watches)
-        return [
-            PriceWatchWatchSensor(self._coordinator, watch) for watch in new_watches
-        ]
+        entities: list[SensorEntity] = []
+        for watch in new_watches:
+            entities.extend(
+                [
+                    PriceWatchWatchSensor(self._coordinator, watch),
+                    PriceWatchTargetPriceSensor(self._coordinator, watch),
+                    PriceWatchStatusSensor(self._coordinator, watch),
+                    PriceWatchLastCheckedSensor(self._coordinator, watch),
+                ]
+            )
+        return entities
 
     def _handle_coordinator_update(self) -> None:
         """Register entities introduced by a later shared coordinator snapshot."""
