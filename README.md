@@ -32,10 +32,24 @@ The token is stored in the Home Assistant config entry. It is not placed in YAML
 
 - Authenticated setup and reconfiguration
 - Summary, target-status, and dynamic watch entities
+- Latest immutable target-event entity for notification automations
 - Refresh and enable/disable watch actions
 - Shopping List support when that Home Assistant capability is available
 
 The integration only calls the configured Price Watch API. It does not scrape retailer sites, access the service database, or expose the service token to a dashboard card.
+
+## Target-event notifications
+
+`sensor.price_watch_latest_target_event` exposes the immutable ID of the most
+recent service-produced `target_reached` event. It is `unknown` when no such
+event has been received by Home Assistant, `none` when the service has no such
+event, and unavailable while Home Assistant cannot refresh Price Watch.
+
+Its safe attributes are `watch_id`, `occurred_at`, `deduplication_key`,
+`event_type`, and (when supplied by the service) `target_price_cents`. Use a
+state-change automation against the event ID to present notifications; do not
+recalculate price or target conditions in YAML. The entity never exposes the
+API token, raw response body, service configuration, or retailer data.
 
 ## Schedule checks in Home Assistant
 

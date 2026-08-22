@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .api import PriceWatchWatch
+from .api import PriceWatchEvent, PriceWatchWatch
 from .const import DATA_COORDINATORS, DATA_SENSOR_MANAGERS, DOMAIN
 from .coordinator import PriceWatchCoordinator
 
@@ -27,6 +27,7 @@ async def async_setup_entry(
     async_add_entities(
         [
             PriceWatchSummarySensor(coordinator, entry),
+            PriceWatchLatestTargetEventSensor(coordinator, entry),
             *manager.add_new_watch_sensors(),
         ]
     )
@@ -66,6 +67,61 @@ class PriceWatchSummarySensor(CoordinatorEntity[PriceWatchCoordinator], SensorEn
             "latest_check_at": summary.latest_check_at,
             "last_successful_coordinator_refresh": self.coordinator.last_successful_refresh_at,
         }
+
+
+class PriceWatchLatestTargetEventSensor(
+    CoordinatorEntity[PriceWatchCoordinator], SensorEntity
+):
+    """Expose the latest immutable target event supplied by Price Watch."""
+
+    _attr_name = "Price Watch Latest Target Event"
+
+    def __init__(
+        self, coordinator: PriceWatchCoordinator, entry: ConfigEntry
+    ) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_latest_target_event"
+
+    def _event(self) -> PriceWatchEvent | None:
+        """Select the latest service-produced target event without deriving one."""
+        if self.coordinator.data is None:
+            return None
+        return max(
+            (
+                event
+                for event in self.coordinator.data.events
+                if event.type == "target_reached"
+            ),
+            key=lambda event: event.occurred_at,
+            default=None,
+        )
+
+    @property
+    def native_value(self) -> str:
+        """Return the immutable event ID, suitable for automation triggers."""
+        event = self._event()
+        return event.id if event is not None else "none"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object] | None:
+        """Expose only the event fields safe for Home Assistant automations."""
+        event = self._event()
+        if event is None:
+            return None
+        attributes: dict[str, object] = {
+            "watch_id": event.watch_id,
+            "occurred_at": event.occurred_at,
+            "deduplication_key": event.deduplication_key,
+            "event_type": event.type,
+        }
+        target_price_cents = event.data.get("target_price_cents")
+        if (
+            isinstance(target_price_cents, int)
+            and not isinstance(target_price_cents, bool)
+            and target_price_cents >= 0
+        ):
+            attributes["target_price_cents"] = target_price_cents
+        return attributes
 
 
 class PriceWatchWatchSensor(CoordinatorEntity[PriceWatchCoordinator], SensorEntity):
