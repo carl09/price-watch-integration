@@ -5,6 +5,19 @@ A Home Assistant custom integration for a self-hosted **Price Watch** service. I
 > [!WARNING]
 > This is an early release. Run a Price Watch service on your own private network before adding this integration.
 
+## Public package, private runtime
+
+This is a public distribution repository for the Home Assistant integration only.
+It contains the HACS package and safe installation documentation. It does **not**
+contain the Price Watch service source, retailer adapters or fixtures, test data,
+private deployment configuration, your watch data, or API tokens.
+
+The integration connects from Home Assistant to a Price Watch API URL that you
+configure. Keep that API on your trusted network; installing this public HACS
+package does not publish your service or watchlist. If you use the Home
+Assistant App distribution, install it separately from
+[`carl09/price-watch-addons`](https://github.com/carl09/price-watch-addons).
+
 ## Install with HACS
 
 1. In Home Assistant, open **HACS** → **Integrations** → the three-dot menu → **Custom repositories**.
@@ -23,6 +36,27 @@ The token is stored in the Home Assistant config entry. It is not placed in YAML
 - Shopping List support when that Home Assistant capability is available
 
 The integration only calls the configured Price Watch API. It does not scrape retailer sites, access the service database, or expose the service token to a dashboard card.
+
+## Schedule checks in Home Assistant
+
+`price_watch.check_all` runs a check when you invoke it. To run it once daily,
+create a Home Assistant automation such as:
+
+```yaml
+id: price_watch_daily_check
+alias: Price Watch — daily check
+description: Runs all Price Watch checks every day at 8:00am.
+mode: single
+triggers:
+  - trigger: time
+    at: "08:00:00"
+conditions: []
+actions:
+  - action: price_watch.check_all
+```
+
+This automation contains no API token; the integration keeps the configured
+token in its config entry.
 
 ## Support
 
