@@ -185,7 +185,7 @@ class PriceWatchWatchSensor(PriceWatchWatchEntity, SensorEntity):
     _attr_native_unit_of_measurement = "AUD"
 
     def __init__(self, coordinator: PriceWatchCoordinator, watch: PriceWatchWatch) -> None:
-        super().__init__(coordinator)
+        super().__init__(coordinator, watch)
         self._attr_unique_id = f"watch_{watch.id}"
         label = (
             watch.current_observation.selected_variant_label
