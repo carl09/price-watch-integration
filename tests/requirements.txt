@@ -1,1 +1,5 @@
-pytest-homeassistant-custom-component
+# Pin the HA test harness so local and CI test runs use the same dependency graph.
+pytest-homeassistant-custom-component==0.13.205
+# pycares 4.9+ starts a shutdown thread that fails Home Assistant's strict
+# teardown fixture; Home Assistant Core pinned 4.8.0 for the same test issue.
+pycares==4.8.0
