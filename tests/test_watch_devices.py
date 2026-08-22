@@ -9,8 +9,10 @@ from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.price_watch.api import (
+    PriceWatchApiClient,
     PriceWatchCurrentObservation,
     PriceWatchEvent,
+    PriceWatchInvalidResponseError,
     PriceWatchSummary,
     PriceWatchVariant,
     PriceWatchWatch,
@@ -53,6 +55,7 @@ def _watch(
     title: str = "Heritage Shorts",
     variant_label: str = "Canyon / XS",
     enabled: bool = True,
+    product_image_url: str | None = None,
 ) -> PriceWatchWatch:
     return PriceWatchWatch(
         id=watch_id,
@@ -79,7 +82,29 @@ def _watch(
         ),
         last_successful_check_at="2026-08-22T07:00:00.000Z",
         last_attempt_at="2026-08-22T07:00:00.000Z",
+        product_image_url=product_image_url,
     )
+
+
+def _api_watch_payload(product_image_url: object | None = None) -> dict[str, object]:
+    """Return a minimal watch response with an optional image endpoint."""
+    payload: dict[str, object] = {
+        "id": "watch-one",
+        "retailer_id": "lorna_jane_au",
+        "product_url": "https://www.lornajane.com.au/products/example",
+        "title": "Heritage Shorts",
+        "variant": {"retailer_variant_id": "48573064806635"},
+        "enabled": True,
+        "target_price_cents": 8500,
+        "check_interval_minutes": 60,
+        "current_observation_id": None,
+        "current_observation": None,
+        "last_successful_check_at": None,
+        "last_attempt_at": None,
+    }
+    if product_image_url is not None:
+        payload["product_image_url"] = product_image_url
+    return payload
 
 
 async def _setup_entry(hass, watches: tuple[PriceWatchWatch, ...]):
@@ -220,3 +245,91 @@ async def test_disabled_watch_retains_its_device_and_safe_primary_attributes(has
     assert state.attributes["retailer_variant_id"] == "48573064806635"
     assert "redacted-test-token" not in str(state.attributes)
     await _unload_entry(hass, entry)
+
+
+async def test_watch_entities_keep_legacy_ids_and_use_concise_names(hass):
+    """Names improve device presentation without changing generated entity IDs."""
+    watch = _watch("watch-one")
+    entry = await _setup_entry(hass, (watch,))
+    entity_registry = er.async_get(hass)
+
+    expected_entities = (
+        ("sensor", "watch_watch-one", "Current price"),
+        ("sensor", "watch_watch-one_target_price", "Target price"),
+        ("sensor", "watch_watch-one_status", "Status"),
+        ("sensor", "watch_watch-one_last_checked", "Last checked"),
+        ("binary_sensor", "watch_watch-one_target_match", "Target match"),
+    )
+    for platform, unique_id, name in expected_entities:
+        entity_id = _entity_id(entity_registry, platform, unique_id)
+        entity = entity_registry.async_get(entity_id)
+        assert entity is not None
+        assert entity.original_name == name
+
+    assert _entity_id(entity_registry, "sensor", "watch_watch-one") == (
+        "sensor.heritage_shorts_canyon_xs"
+    )
+    assert _entity_id(entity_registry, "sensor", "watch_watch-one_target_price") == (
+        "sensor.heritage_shorts_target_price"
+    )
+    assert _entity_id(entity_registry, "sensor", "watch_watch-one_status") == (
+        "sensor.heritage_shorts_status"
+    )
+    assert _entity_id(entity_registry, "sensor", "watch_watch-one_last_checked") == (
+        "sensor.heritage_shorts_last_checked"
+    )
+    assert _entity_id(
+        entity_registry, "binary_sensor", "watch_watch-one_target_match"
+    ) == ("binary_sensor.heritage_shorts_target_match")
+    await _unload_entry(hass, entry)
+
+
+async def test_primary_sensor_uses_validated_local_product_image_endpoint(hass):
+    """The primary entity exposes a same-service image endpoint only."""
+    watch = _watch(
+        "watch-one",
+        product_image_url="http://price-watch.test:8787/v1/watches/watch-one/image",
+    )
+    entry = await _setup_entry(hass, (watch,))
+    entity_registry = er.async_get(hass)
+    state = hass.states.get(_entity_id(entity_registry, "sensor", "watch_watch-one"))
+
+    assert state is not None
+    assert state.attributes["entity_picture"] == watch.product_image_url
+    await _unload_entry(hass, entry)
+
+
+async def test_product_image_url_rejects_retailer_url():
+    """A retailer-hosted image must never reach Home Assistant entity state."""
+    client = PriceWatchApiClient(
+        "http://price-watch.test:8787",
+        "test-token",
+        AsyncMock(),
+    )
+    payload = _api_watch_payload(
+        "https://www.lornajane.com.au/images/example.jpg"
+    )
+
+    with pytest.raises(PriceWatchInvalidResponseError):
+        client._parse_watch(payload)
+
+
+async def test_product_image_url_accepts_only_a_same_service_endpoint():
+    """An image can be exposed only from the configured Price Watch service."""
+    client = PriceWatchApiClient(
+        "http://price-watch.test:8787",
+        "test-token",
+        AsyncMock(),
+    )
+
+    parsed_watch = client._parse_watch(
+        _api_watch_payload(
+            "http://price-watch.test:8787/v1/watches/watch-one/image"
+        )
+    )
+
+    assert (
+        parsed_watch.product_image_url
+        == "http://price-watch.test:8787/v1/watches/watch-one/image"
+    )
+    assert client._parse_watch(_api_watch_payload()).product_image_url is None

@@ -98,6 +98,7 @@ class PriceWatchWatch:
     current_observation: PriceWatchCurrentObservation | None
     last_successful_check_at: str | None
     last_attempt_at: str | None
+    product_image_url: str | None = None
 
 
 @dataclass(frozen=True)
@@ -371,8 +372,7 @@ class PriceWatchApiClient:
 
         return payload
 
-    @staticmethod
-    def _parse_watch(value: object) -> PriceWatchWatch:
+    def _parse_watch(self, value: object) -> PriceWatchWatch:
         if not isinstance(value, dict):
             raise PriceWatchInvalidResponseError
         required_strings = ("id", "retailer_id", "product_url", "title")
@@ -421,6 +421,9 @@ class PriceWatchApiClient:
             raise PriceWatchInvalidResponseError
         if "current_observation" not in value:
             raise PriceWatchInvalidResponseError
+        product_image_url = self._parse_product_image_url(
+            value.get("product_image_url")
+        )
         return PriceWatchWatch(
             id=value["id"],
             retailer_id=value["retailer_id"],
@@ -439,6 +442,47 @@ class PriceWatchApiClient:
             ),
             last_successful_check_at=value.get("last_successful_check_at"),
             last_attempt_at=value.get("last_attempt_at"),
+            product_image_url=product_image_url,
+        )
+
+    def _parse_product_image_url(self, value: object) -> str | None:
+        """Accept only a same-service image endpoint, never a retailer URL."""
+        if value is None:
+            return None
+        if not isinstance(value, str) or not value:
+            raise PriceWatchInvalidResponseError
+
+        try:
+            image_url = urlsplit(value)
+            base_url = urlsplit(self._base_url)
+            valid_url = (
+                image_url.scheme in {"http", "https"}
+                and bool(image_url.netloc)
+                and not image_url.username
+                and not image_url.password
+                and not image_url.query
+                and not image_url.fragment
+                and image_url.hostname == base_url.hostname
+                and image_url.port == base_url.port
+                and image_url.scheme == base_url.scheme
+            )
+        except ValueError:
+            valid_url = False
+        if not valid_url:
+            raise PriceWatchInvalidResponseError
+
+        base_path = base_url.path.rstrip("/")
+        allowed_path_prefix = f"{base_path}/v1/" if base_path else "/v1/"
+        if not image_url.path.startswith(allowed_path_prefix):
+            raise PriceWatchInvalidResponseError
+        return urlunsplit(
+            (
+                image_url.scheme,
+                image_url.netloc,
+                image_url.path,
+                "",
+                "",
+            )
         )
 
     @staticmethod

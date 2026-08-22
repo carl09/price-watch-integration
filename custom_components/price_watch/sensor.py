@@ -11,6 +11,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
+from homeassistant.util import slugify
 
 from .api import PriceWatchEvent, PriceWatchWatch
 from .const import DATA_COORDINATORS, DATA_SENSOR_MANAGERS, DOMAIN
@@ -153,6 +154,10 @@ class PriceWatchWatchEntity(CoordinatorEntity[PriceWatchCoordinator]):
             None,
         )
 
+    def _set_legacy_entity_id(self, platform: str, legacy_name: str) -> None:
+        """Keep generated IDs from the original per-watch entity names."""
+        self.entity_id = f"{platform}.{slugify(legacy_name)}"
+
     @property
     def available(self) -> bool:
         """Mark removed watches unavailable without removing their registry entry."""
@@ -182,6 +187,7 @@ class PriceWatchWatchSensor(PriceWatchWatchEntity, SensorEntity):
     """Expose the existing current-price sensor for a single watch."""
 
     _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_has_entity_name = True
     _attr_native_unit_of_measurement = "AUD"
 
     def __init__(self, coordinator: PriceWatchCoordinator, watch: PriceWatchWatch) -> None:
@@ -192,7 +198,11 @@ class PriceWatchWatchSensor(PriceWatchWatchEntity, SensorEntity):
             if watch.current_observation is not None
             else None
         )
-        self._attr_name = f"{watch.title} ({label})" if label else watch.title
+        self._attr_name = "Current price"
+        legacy_name = (
+            f"{watch.title} ({label})" if label else watch.title
+        )
+        self._set_legacy_entity_id("sensor", legacy_name)
 
     @property
     def native_value(self) -> Decimal | None:
@@ -206,6 +216,12 @@ class PriceWatchWatchSensor(PriceWatchWatchEntity, SensorEntity):
         ):
             return None
         return Decimal(observation.price_cents) / Decimal(100)
+
+    @property
+    def entity_picture(self) -> str | None:
+        """Use only the validated local Price Watch image endpoint."""
+        watch = self._watch()
+        return watch.product_image_url if watch is not None else None
 
     @property
     def extra_state_attributes(self) -> dict[str, object] | None:
@@ -240,13 +256,15 @@ class PriceWatchTargetPriceSensor(PriceWatchWatchEntity, SensorEntity):
     """Expose a meaningful configured target price for one watch."""
 
     _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_has_entity_name = True
     _attr_native_unit_of_measurement = "AUD"
 
     def __init__(self, coordinator: PriceWatchCoordinator, watch: PriceWatchWatch) -> None:
         """Set a stable target-price entity identity."""
         super().__init__(coordinator, watch)
         self._attr_unique_id = f"watch_{watch.id}_target_price"
-        self._attr_name = f"{watch.title} Target Price"
+        self._attr_name = "Target price"
+        self._set_legacy_entity_id("sensor", f"{watch.title} Target Price")
 
     @property
     def native_value(self) -> Decimal | None:
@@ -260,11 +278,14 @@ class PriceWatchTargetPriceSensor(PriceWatchWatchEntity, SensorEntity):
 class PriceWatchStatusSensor(PriceWatchWatchEntity, SensorEntity):
     """Expose the current service-produced observation status."""
 
+    _attr_has_entity_name = True
+
     def __init__(self, coordinator: PriceWatchCoordinator, watch: PriceWatchWatch) -> None:
         """Set a stable status entity identity."""
         super().__init__(coordinator, watch)
         self._attr_unique_id = f"watch_{watch.id}_status"
-        self._attr_name = f"{watch.title} Status"
+        self._attr_name = "Status"
+        self._set_legacy_entity_id("sensor", f"{watch.title} Status")
 
     @property
     def native_value(self) -> str | None:
@@ -279,12 +300,14 @@ class PriceWatchLastCheckedSensor(PriceWatchWatchEntity, SensorEntity):
     """Expose the current observation timestamp without another API call."""
 
     _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_has_entity_name = True
 
     def __init__(self, coordinator: PriceWatchCoordinator, watch: PriceWatchWatch) -> None:
         """Set a stable last-observation entity identity."""
         super().__init__(coordinator, watch)
         self._attr_unique_id = f"watch_{watch.id}_last_checked"
-        self._attr_name = f"{watch.title} Last Checked"
+        self._attr_name = "Last checked"
+        self._set_legacy_entity_id("sensor", f"{watch.title} Last Checked")
 
     @property
     def native_value(self):

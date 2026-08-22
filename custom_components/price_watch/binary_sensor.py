@@ -71,13 +71,18 @@ class PriceWatchWatchTargetMatchBinarySensor(
 ):
     """Expose the service-provided target state for one device-linked watch."""
 
+    _attr_has_entity_name = True
+
     def __init__(
         self, coordinator: PriceWatchCoordinator, watch: PriceWatchWatch
     ) -> None:
         """Set a stable target-match entity identity."""
         super().__init__(coordinator, watch)
         self._attr_unique_id = f"watch_{watch.id}_target_match"
-        self._attr_name = f"{watch.title} Target Match"
+        self._attr_name = "Target match"
+        self._set_legacy_entity_id(
+            "binary_sensor", f"{watch.title} Target Match"
+        )
 
     @property
     def is_on(self) -> bool | None:
