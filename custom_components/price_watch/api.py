@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
 import aiohttp
@@ -538,7 +539,13 @@ class PriceWatchApiClient:
         )
 
     def _parse_product_image_url(self, value: object) -> str | None:
-        """Accept only a same-service image endpoint, never a retailer URL."""
+        """Accept only a Price Watch image endpoint, never a retailer URL.
+
+        The App returns its image capability as a relative URL so its internal
+        hostname and token never need to be persisted by the service. Resolve
+        that narrow, authenticated endpoint against the configured service
+        base URL before exposing it to Home Assistant.
+        """
         if value is None:
             return None
         if not isinstance(value, str) or not value:
@@ -547,6 +554,8 @@ class PriceWatchApiClient:
         try:
             image_url = urlsplit(value)
             base_url = urlsplit(self._base_url)
+            if not image_url.scheme and not image_url.netloc:
+                return self._parse_relative_product_image_url(image_url, base_url)
             valid_url = (
                 image_url.scheme in {"http", "https"}
                 and bool(image_url.netloc)
@@ -573,6 +582,34 @@ class PriceWatchApiClient:
                 image_url.netloc,
                 image_url.path,
                 "",
+                "",
+            )
+        )
+
+    @staticmethod
+    def _parse_relative_product_image_url(image_url, base_url) -> str:
+        """Resolve the App's one supported relative image capability route."""
+        if image_url.fragment or not re.fullmatch(
+            r"/v1/watches/[A-Za-z0-9_-]+/image", image_url.path
+        ):
+            raise PriceWatchInvalidResponseError
+        try:
+            query = parse_qsl(
+                image_url.query, keep_blank_values=True, strict_parsing=True
+            )
+        except ValueError as err:
+            raise PriceWatchInvalidResponseError from err
+        if len(query) != 1 or query[0][0] != "token" or not re.fullmatch(
+            r"[A-Za-z0-9_-]{43}", query[0][1]
+        ):
+            raise PriceWatchInvalidResponseError
+        base_path = base_url.path.rstrip("/")
+        return urlunsplit(
+            (
+                base_url.scheme,
+                base_url.netloc,
+                f"{base_path}{image_url.path}",
+                image_url.query,
                 "",
             )
         )

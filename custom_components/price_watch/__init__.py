@@ -35,10 +35,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     try:
         await coordinator.async_config_entry_first_refresh()
     except ConfigEntryAuthFailed:
-        await async_unload_entry(hass, entry)
+        _cleanup_entry_runtime_data(hass, entry)
         raise
     except ConfigEntryNotReady:
-        await async_unload_entry(hass, entry)
+        _cleanup_entry_runtime_data(hass, entry)
         raise
     await hass.config_entries.async_forward_entry_setups(
         entry, ["sensor", "binary_sensor"]
@@ -53,9 +53,15 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry, ["sensor", "binary_sensor"]
     ):
         return False
+    _cleanup_entry_runtime_data(hass, entry)
+    return True
+
+
+def _cleanup_entry_runtime_data(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Remove runtime state without assuming entity platforms were loaded."""
     domain_data = hass.data.get(DOMAIN)
     if domain_data is None:
-        return True
+        return
     clients = domain_data.get(DATA_CLIENTS)
     coordinators = domain_data.get(DATA_COORDINATORS)
     sensor_managers = domain_data.get(DATA_SENSOR_MANAGERS)
@@ -81,4 +87,3 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         and not domain_data.get(DATA_BINARY_SENSOR_MANAGERS)
     ):
         hass.data.pop(DOMAIN)
-    return True

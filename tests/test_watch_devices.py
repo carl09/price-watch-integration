@@ -333,3 +333,46 @@ async def test_product_image_url_accepts_only_a_same_service_endpoint():
         == "http://price-watch.test:8787/v1/watches/watch-one/image"
     )
     assert client._parse_watch(_api_watch_payload()).product_image_url is None
+
+
+async def test_product_image_url_accepts_app_relative_capability_endpoint():
+    """The App's relative capability link resolves only against this service."""
+    client = PriceWatchApiClient(
+        "http://price-watch.test:8787",
+        "test-token",
+        AsyncMock(),
+    )
+    capability_token = "a" * 43
+
+    parsed_watch = client._parse_watch(
+        _api_watch_payload(
+            f"/v1/watches/watch-one/image?token={capability_token}"
+        )
+    )
+
+    assert parsed_watch.product_image_url == (
+        "http://price-watch.test:8787/v1/watches/watch-one/image?"
+        f"token={capability_token}"
+    )
+
+
+@pytest.mark.parametrize(
+    "image_url",
+    (
+        "/v1/watches/watch-one/image",
+        "/v1/watches/watch-one/image?token=short",
+        "/v1/watches/watch-one/image?token=" + "a" * 43 + "&extra=value",
+        "/v1/watches/watch-one/other?token=" + "a" * 43,
+        "//www.lornajane.com.au/v1/watches/watch-one/image?token=" + "a" * 43,
+    ),
+)
+async def test_product_image_url_rejects_invalid_relative_capability_endpoint(image_url):
+    """Relative values cannot escape the expected App image capability route."""
+    client = PriceWatchApiClient(
+        "http://price-watch.test:8787",
+        "test-token",
+        AsyncMock(),
+    )
+
+    with pytest.raises(PriceWatchInvalidResponseError):
+        client._parse_watch(_api_watch_payload(image_url))
