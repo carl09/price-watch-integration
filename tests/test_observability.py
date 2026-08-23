@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import logging
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
+from uuid import UUID
 
 import pytest
 from homeassistant.exceptions import ConfigEntryAuthFailed
@@ -41,6 +42,7 @@ from custom_components.price_watch.coordinator import (
     PriceWatchCoordinator,
     PriceWatchCoordinatorData,
 )
+from custom_components.price_watch.observability import log_failure
 from custom_components.price_watch.services import async_register_services
 
 pytestmark = pytest.mark.asyncio
@@ -51,6 +53,32 @@ _IMAGE_CAPABILITY_URL = (
     "https://price-watch.example/v1/watches/watch-one/image?capability=image-token"
 )
 _RETAILER_URL = "https://retailer.example/products/private-shorts"
+_REQUEST_ID = "a62c0a4a-86ec-4bb7-bba0-b19ab5570c60"
+
+
+class _Response:
+    def __init__(self, status: int, payload: object) -> None:
+        self.status = status
+        self._payload = payload
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, traceback) -> None:
+        return None
+
+    async def json(self, *, content_type=None) -> object:
+        return self._payload
+
+
+class _Session:
+    def __init__(self, response: _Response) -> None:
+        self.response = response
+        self.requests: list[dict[str, object]] = []
+
+    def post(self, url: str, **kwargs):
+        self.requests.append({"url": url, **kwargs})
+        return self.response
 
 
 def _watch() -> PriceWatchWatch:
@@ -120,10 +148,10 @@ async def test_coordinator_logs_each_failure_classification_without_secrets(
             None,
         ),
         (
-            PriceWatchApiResponseError(503, "upstream_unavailable"),
+            PriceWatchApiResponseError(503, "not_found"),
             "api_response",
             UpdateFailed,
-            "http_status=503 service_code=upstream_unavailable",
+            "http_status=503 service_code=not_found",
         ),
     )
 
@@ -144,12 +172,45 @@ async def test_coordinator_logs_each_failure_classification_without_secrets(
         logs = "\n".join(_messages(caplog))
         assert (
             "operation=coordinator_refresh "
-            "route=/v1/summary,/v1/watches,/v1/events "
+            "route=/v1/summary "
             f"outcome=failed failure={category}"
         ) in logs
+        assert "request_id=" in logs
         if details is not None:
             assert details in logs
         _assert_no_sensitive_values(caplog)
+
+
+async def test_coordinator_logs_each_route_with_its_request_id(hass, caplog):
+    """Coordinator requests use distinct IDs that match their route log record."""
+    client = AsyncMock(spec=PriceWatchApiClient)
+    client.async_get_summary.return_value = PriceWatchSummary(0, 0, 0, 0, None)
+    client.async_get_watches.return_value = ()
+    client.async_get_events.return_value = ()
+    coordinator = PriceWatchCoordinator(
+        hass,
+        MockConfigEntry(domain=DOMAIN),
+        client,
+    )
+    caplog.set_level(logging.DEBUG, logger=_LOGGER_NAME)
+
+    await coordinator._async_update_data()
+
+    requests = (
+        ("/v1/summary", client.async_get_summary),
+        ("/v1/watches", client.async_get_watches),
+        ("/v1/events", client.async_get_events),
+    )
+    request_ids = [
+        method.await_args.kwargs["request_id"] for _, method in requests
+    ]
+    assert len(set(request_ids)) == len(request_ids)
+    logs = "\n".join(_messages(caplog))
+    for route, request_id in requests:
+        assert (
+            f"operation=coordinator_refresh route={route} "
+            f"outcome=succeeded request_id={request_id.await_args.kwargs['request_id']}"
+        ) in logs
 
 
 async def test_services_log_success_at_debug_without_sensitive_values(hass, caplog):
@@ -227,7 +288,7 @@ async def test_services_log_failures_with_safe_api_response_metadata(hass, caplo
     caplog.set_level(logging.WARNING, logger=_LOGGER_NAME)
 
     client.async_check_all.side_effect = PriceWatchApiResponseError(
-        429, "rate_limited"
+        429, "idempotency_conflict"
     )
     with pytest.raises(Exception):
         await hass.services.async_call(DOMAIN, SERVICE_CHECK_ALL, blocking=True)
@@ -261,8 +322,9 @@ async def test_services_log_failures_with_safe_api_response_metadata(hass, caplo
     logs = "\n".join(_messages(caplog))
     assert (
         "operation=check_all route=/v1/checks outcome=failed "
-        "failure=api_response http_status=429 service_code=rate_limited"
+        "failure=api_response request_id="
     ) in logs
+    assert "http_status=429 service_code=idempotency_conflict" in logs
     assert (
         "operation=check_watch route=/v1/watches/{watch_id}/check "
         "outcome=failed failure=timeout watch_id=watch-one"
@@ -273,7 +335,109 @@ async def test_services_log_failures_with_safe_api_response_metadata(hass, caplo
     ) in logs
     assert (
         "operation=add_to_shopping_list route=shopping_list.add_item "
-        "outcome=failed failure=api_response watch_id=watch-one "
-        "service_code=shopping_list_unavailable"
+        "outcome=failed failure=api_response watch_id=watch-one"
     ) in logs
+    assert "service_code=shopping_list_unavailable" not in logs
     _assert_no_sensitive_values(caplog)
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_code"),
+    (
+        ({"error": {"code": "not_found"}}, "not_found"),
+        ({"error": {}}, None),
+        ({"error": {"code": ["not_found"]}}, None),
+        (
+            {
+                "error": {
+                    "code": "untrusted-code",
+                    "message": _RETAILER_URL,
+                }
+            },
+            None,
+        ),
+    ),
+)
+async def test_nested_service_error_codes_are_strictly_allowlisted(
+    hass, caplog, payload, expected_code
+):
+    """Nested Fastify errors retain only known machine codes."""
+    error = await PriceWatchApiClient._async_api_response_error(
+        _Response(500, payload)
+    )
+
+    assert error.service_code == expected_code
+    caplog.set_level(logging.WARNING, logger=_LOGGER_NAME)
+    log_failure("check_all", "/v1/checks", error, request_id=_REQUEST_ID)
+    logs = "\n".join(_messages(caplog))
+    if expected_code is None:
+        assert "service_code=" not in logs
+    else:
+        assert f"service_code={expected_code}" in logs
+    _assert_no_sensitive_values(caplog)
+
+
+async def test_service_request_id_matches_fastify_header_and_log(hass, caplog):
+    """A service request carries the same generated UUID in header and log."""
+    session = _Session(_Response(200, {}))
+    client = PriceWatchApiClient("http://price-watch.test:8787", "test-token", session)
+    coordinator = SimpleNamespace(data=None, async_request_refresh=AsyncMock())
+    hass.data[DOMAIN] = {
+        DATA_CLIENTS: {"entry": client},
+        DATA_COORDINATORS: {"entry": coordinator},
+    }
+    async_register_services(hass)
+    caplog.set_level(logging.DEBUG, logger=_LOGGER_NAME)
+
+    with patch(
+        "custom_components.price_watch.services.uuid4",
+        return_value=UUID(_REQUEST_ID),
+    ):
+        await hass.services.async_call(DOMAIN, SERVICE_CHECK_ALL, blocking=True)
+
+    assert session.requests[0]["headers"]["request-id"] == _REQUEST_ID
+    logs = "\n".join(_messages(caplog))
+    assert f"operation=check_all route=/v1/checks outcome=succeeded request_id={_REQUEST_ID}" in logs
+
+
+async def test_client_generates_a_fresh_fastify_request_id_for_each_request():
+    """Every direct client request has a new canonical Fastify request ID."""
+    session = _Session(_Response(200, {}))
+    client = PriceWatchApiClient("http://price-watch.test:8787", "test-token", session)
+
+    await client.async_check_all()
+    await client.async_check_all()
+
+    request_ids = [
+        request["headers"]["request-id"] for request in session.requests
+    ]
+    assert len(request_ids) == 2
+    assert request_ids[0] != request_ids[1]
+    assert all(str(UUID(request_id)) == request_id for request_id in request_ids)
+
+
+@pytest.mark.parametrize("watch_id", ("watch-one\ninjected=true", "free form watch"))
+async def test_invalid_watch_ids_are_omitted_from_logs(hass, caplog, watch_id):
+    """Control characters and free-form watch IDs never enter structured logs."""
+    client = AsyncMock(spec=PriceWatchApiClient)
+    client.async_check_watch.side_effect = PriceWatchTimeoutError(_BEARER_TOKEN)
+    coordinator = SimpleNamespace(data=None, async_request_refresh=AsyncMock())
+    hass.data[DOMAIN] = {
+        DATA_CLIENTS: {"entry": client},
+        DATA_COORDINATORS: {"entry": coordinator},
+    }
+    async_register_services(hass)
+    caplog.set_level(logging.WARNING, logger=_LOGGER_NAME)
+
+    with pytest.raises(Exception):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_CHECK_WATCH,
+            {ATTR_WATCH_ID: watch_id},
+            blocking=True,
+        )
+
+    logs = "\n".join(_messages(caplog))
+    assert "operation=check_watch" in logs
+    assert "watch_id=" not in logs
+    assert watch_id not in logs

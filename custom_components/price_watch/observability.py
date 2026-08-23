@@ -11,14 +11,23 @@ from .api import (
     PriceWatchInvalidResponseError,
     PriceWatchTimeoutError,
     PriceWatchTransportError,
+    _trusted_service_code,
 )
 
 _LOGGER = logging.getLogger(__package__)
 _SAFE_SERVICE_CODE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+_SAFE_WATCH_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_UUID = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+)
 
 
 def log_success(
-    operation: str, route: str, *, watch_id: str | None = None
+    operation: str,
+    route: str,
+    *,
+    watch_id: str | None = None,
+    request_id: str | None = None,
 ) -> None:
     """Log a successful operation at debug level without sensitive values."""
     _log(
@@ -27,6 +36,7 @@ def log_success(
         operation,
         route,
         watch_id=watch_id,
+        request_id=request_id,
     )
 
 
@@ -37,6 +47,7 @@ def log_failure(
     *,
     watch_id: str | None = None,
     service_code: str | None = None,
+    request_id: str | None = None,
 ) -> None:
     """Log a classified API failure without exception text or response bodies."""
     category, http_status, error_service_code = _classify_error(error)
@@ -49,6 +60,7 @@ def log_failure(
         watch_id=watch_id,
         http_status=http_status,
         service_code=service_code or error_service_code,
+        request_id=request_id,
     )
 
 
@@ -59,6 +71,7 @@ def log_service_failure(
     failure: str,
     watch_id: str | None = None,
     service_code: str | None = None,
+    request_id: str | None = None,
 ) -> None:
     """Log a safe local Home Assistant service failure."""
     _log(
@@ -69,6 +82,7 @@ def log_service_failure(
         failure=failure,
         watch_id=watch_id,
         service_code=service_code,
+        request_id=request_id,
     )
 
 
@@ -96,6 +110,7 @@ def _log(
     watch_id: str | None = None,
     http_status: int | None = None,
     service_code: str | None = None,
+    request_id: str | None = None,
 ) -> None:
     fields = [
         f"operation={operation}",
@@ -104,22 +119,16 @@ def _log(
     ]
     if failure is not None:
         fields.append(f"failure={failure}")
-    if watch_id is not None:
-        fields.append(f"watch_id={_safe_identifier(watch_id)}")
+    if watch_id is not None and _SAFE_WATCH_ID.fullmatch(watch_id):
+        fields.append(f"watch_id={watch_id}")
+    if request_id is not None and _UUID.fullmatch(request_id):
+        fields.append(f"request_id={request_id}")
     if http_status is not None and 100 <= http_status <= 599:
         fields.append(f"http_status={http_status}")
-    if service_code is not None and _SAFE_SERVICE_CODE.fullmatch(service_code):
+    if (
+        service_code is not None
+        and _SAFE_SERVICE_CODE.fullmatch(service_code)
+        and _trusted_service_code(service_code) is not None
+    ):
         fields.append(f"service_code={service_code}")
     _LOGGER.log(level, "Price Watch integration %s", " ".join(fields))
-
-
-def _safe_identifier(value: str) -> str:
-    if (
-        len(value) > 128
-        or "://" in value
-        or "?" in value
-        or "bearer" in value.lower()
-        or "token" in value.lower()
-    ):
-        return "<redacted>"
-    return value

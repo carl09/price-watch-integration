@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from functools import partial
+from uuid import uuid4
 
 import voluptuous as vol
 from homeassistant.core import HomeAssistant, ServiceCall
@@ -105,25 +106,26 @@ async def _async_check_all(hass: HomeAssistant, call: ServiceCall) -> None:
     client, coordinator = _runtime(hass)
     operation = SERVICE_CHECK_ALL
     route = "/v1/checks"
+    request_id = str(uuid4())
     try:
-        await client.async_check_all()
+        await client.async_check_all(request_id=request_id)
     except PriceWatchAuthenticationError as err:
-        log_failure(operation, route, err)
+        log_failure(operation, route, err, request_id=request_id)
         raise HomeAssistantError("Price Watch authentication failed") from err
     except PriceWatchTimeoutError as err:
-        log_failure(operation, route, err)
+        log_failure(operation, route, err, request_id=request_id)
         raise HomeAssistantError("Price Watch service timed out") from err
     except PriceWatchTransportError as err:
-        log_failure(operation, route, err)
+        log_failure(operation, route, err, request_id=request_id)
         raise HomeAssistantError("Price Watch service is unavailable") from err
     except PriceWatchInvalidResponseError as err:
-        log_failure(operation, route, err)
+        log_failure(operation, route, err, request_id=request_id)
         raise HomeAssistantError("Price Watch service returned invalid data") from err
     except PriceWatchApiResponseError as err:
-        log_failure(operation, route, err)
+        log_failure(operation, route, err, request_id=request_id)
         raise HomeAssistantError("Price Watch service rejected the request") from err
     await coordinator.async_request_refresh()
-    log_success(operation, route)
+    log_success(operation, route, request_id=request_id)
 
 
 async def _async_check_watch(hass: HomeAssistant, call: ServiceCall) -> None:
@@ -132,25 +134,26 @@ async def _async_check_watch(hass: HomeAssistant, call: ServiceCall) -> None:
     watch_id = call.data[ATTR_WATCH_ID]
     operation = SERVICE_CHECK_WATCH
     route = "/v1/watches/{watch_id}/check"
+    request_id = str(uuid4())
     try:
-        await client.async_check_watch(watch_id)
+        await client.async_check_watch(watch_id, request_id=request_id)
     except PriceWatchAuthenticationError as err:
-        log_failure(operation, route, err, watch_id=watch_id)
+        log_failure(operation, route, err, watch_id=watch_id, request_id=request_id)
         raise HomeAssistantError("Price Watch authentication failed") from err
     except PriceWatchTimeoutError as err:
-        log_failure(operation, route, err, watch_id=watch_id)
+        log_failure(operation, route, err, watch_id=watch_id, request_id=request_id)
         raise HomeAssistantError("Price Watch service timed out") from err
     except PriceWatchTransportError as err:
-        log_failure(operation, route, err, watch_id=watch_id)
+        log_failure(operation, route, err, watch_id=watch_id, request_id=request_id)
         raise HomeAssistantError("Price Watch service is unavailable") from err
     except PriceWatchInvalidResponseError as err:
-        log_failure(operation, route, err, watch_id=watch_id)
+        log_failure(operation, route, err, watch_id=watch_id, request_id=request_id)
         raise HomeAssistantError("Price Watch service returned invalid data") from err
     except PriceWatchApiResponseError as err:
-        log_failure(operation, route, err, watch_id=watch_id)
+        log_failure(operation, route, err, watch_id=watch_id, request_id=request_id)
         raise HomeAssistantError("Price Watch service rejected the request") from err
     await coordinator.async_request_refresh()
-    log_success(operation, route, watch_id=watch_id)
+    log_success(operation, route, watch_id=watch_id, request_id=request_id)
 
 
 async def _async_set_enabled(hass: HomeAssistant, call: ServiceCall) -> None:
@@ -159,28 +162,30 @@ async def _async_set_enabled(hass: HomeAssistant, call: ServiceCall) -> None:
     watch_id = call.data[ATTR_WATCH_ID]
     operation = SERVICE_SET_ENABLED
     route = "/v1/watches/{watch_id}"
+    request_id = str(uuid4())
     try:
         await client.async_set_enabled(
             watch_id,
             call.data[ATTR_ENABLED],
+            request_id=request_id,
         )
     except PriceWatchAuthenticationError as err:
-        log_failure(operation, route, err, watch_id=watch_id)
+        log_failure(operation, route, err, watch_id=watch_id, request_id=request_id)
         raise HomeAssistantError("Price Watch authentication failed") from err
     except PriceWatchTimeoutError as err:
-        log_failure(operation, route, err, watch_id=watch_id)
+        log_failure(operation, route, err, watch_id=watch_id, request_id=request_id)
         raise HomeAssistantError("Price Watch service timed out") from err
     except PriceWatchTransportError as err:
-        log_failure(operation, route, err, watch_id=watch_id)
+        log_failure(operation, route, err, watch_id=watch_id, request_id=request_id)
         raise HomeAssistantError("Price Watch service is unavailable") from err
     except PriceWatchInvalidResponseError as err:
-        log_failure(operation, route, err, watch_id=watch_id)
+        log_failure(operation, route, err, watch_id=watch_id, request_id=request_id)
         raise HomeAssistantError("Price Watch service returned invalid data") from err
     except PriceWatchApiResponseError as err:
-        log_failure(operation, route, err, watch_id=watch_id)
+        log_failure(operation, route, err, watch_id=watch_id, request_id=request_id)
         raise HomeAssistantError("Price Watch service rejected the request") from err
     await coordinator.async_request_refresh()
-    log_success(operation, route, watch_id=watch_id)
+    log_success(operation, route, watch_id=watch_id, request_id=request_id)
 
 
 async def _async_add_to_shopping_list(

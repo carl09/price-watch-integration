@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-import re
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import aiohttp
 
@@ -16,6 +15,7 @@ from .const import (
     CHECKS_PATH,
     EVENTS_PATH,
     HEALTH_PATH,
+    REQUEST_ID_HEADER,
     REQUEST_TIMEOUT_SECONDS,
     SUMMARY_PATH,
     WATCHES_PATH,
@@ -146,6 +146,25 @@ class PriceWatchEnabledResult:
     enabled: bool
 
 
+_TRUSTED_SERVICE_CODES = frozenset(
+    {
+        "idempotency_conflict",
+        "idempotency_key_required",
+        "internal_error",
+        "not_found",
+        "unauthorized",
+        "unsupported_product_host",
+        "unsupported_retailer",
+        "validation_error",
+    }
+)
+
+
+def _trusted_service_code(value: object) -> str | None:
+    """Return only expected machine-readable service codes."""
+    return value if isinstance(value, str) and value in _TRUSTED_SERVICE_CODES else None
+
+
 def normalise_base_url(value: str) -> str:
     """Return a canonical HTTP(S) service URL without a trailing slash."""
     parsed = urlsplit(value.strip())
@@ -182,9 +201,11 @@ class PriceWatchApiClient:
         self._api_token = api_token
         self._session = session
 
-    async def async_get_health(self) -> PriceWatchHealth:
+    async def async_get_health(
+        self, *, request_id: str | None = None
+    ) -> PriceWatchHealth:
         """Validate the authenticated service health response."""
-        payload = await self._async_get_json(HEALTH_PATH)
+        payload = await self._async_get_json(HEALTH_PATH, request_id=request_id)
         if not isinstance(payload, dict):
             raise PriceWatchInvalidResponseError
         if payload.get("status") != "healthy" or payload.get("database") != "healthy":
@@ -194,9 +215,11 @@ class PriceWatchApiClient:
             raise PriceWatchInvalidResponseError
         return PriceWatchHealth(version=version)
 
-    async def async_get_summary(self) -> PriceWatchSummary:
+    async def async_get_summary(
+        self, *, request_id: str | None = None
+    ) -> PriceWatchSummary:
         """Return a validated service summary."""
-        payload = await self._async_get_json(SUMMARY_PATH)
+        payload = await self._async_get_json(SUMMARY_PATH, request_id=request_id)
         if not isinstance(payload, dict):
             raise PriceWatchInvalidResponseError
         counts = ("enabled_watches", "target_matches", "stale", "failed")
@@ -224,9 +247,11 @@ class PriceWatchApiClient:
             target_matching_watch_ids=tuple(target_ids),
         )
 
-    async def async_get_watches(self) -> tuple[PriceWatchWatch, ...]:
+    async def async_get_watches(
+        self, *, request_id: str | None = None
+    ) -> tuple[PriceWatchWatch, ...]:
         """Return validated watches from the first service page."""
-        payload = await self._async_get_json(WATCHES_PATH)
+        payload = await self._async_get_json(WATCHES_PATH, request_id=request_id)
         if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
             raise PriceWatchInvalidResponseError
         next_cursor = payload.get("next_cursor")
@@ -234,14 +259,16 @@ class PriceWatchApiClient:
             raise PriceWatchInvalidResponseError
         return tuple(self._parse_watch(item) for item in payload["data"])
 
-    async def async_get_events(self) -> tuple[PriceWatchEvent, ...]:
+    async def async_get_events(
+        self, *, request_id: str | None = None
+    ) -> tuple[PriceWatchEvent, ...]:
         """Return validated immutable events."""
-        payload = await self._async_get_json(EVENTS_PATH)
+        payload = await self._async_get_json(EVENTS_PATH, request_id=request_id)
         if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
             raise PriceWatchInvalidResponseError
         return tuple(self._parse_event(item) for item in payload["data"])
 
-    async def async_check_all(self) -> None:
+    async def async_check_all(self, *, request_id: str | None = None) -> None:
         """Run due watches with a new idempotency key.
 
         The Home Assistant action only needs the request to complete; the
@@ -249,20 +276,27 @@ class PriceWatchApiClient:
         watch state. Do not reject a successful check because its per-watch
         response body is not needed by the action.
         """
-        await self._async_post_json(CHECKS_PATH, str(uuid4()))
+        await self._async_post_json(
+            CHECKS_PATH,
+            str(uuid4()),
+            request_id=request_id,
+        )
 
-    async def async_check_watch(self, watch_id: str) -> PriceWatchCheckResult:
+    async def async_check_watch(
+        self, watch_id: str, *, request_id: str | None = None
+    ) -> PriceWatchCheckResult:
         """Run one watch with a new idempotency key."""
         if not isinstance(watch_id, str) or not watch_id:
             raise ValueError("watch ID is required")
         payload = await self._async_post_json(
             f"{WATCHES_PATH}/{quote(watch_id, safe='')}/check",
             str(uuid4()),
+            request_id=request_id,
         )
         return self._parse_check_result(payload)
 
     async def async_set_enabled(
-        self, watch_id: str, enabled: bool
+        self, watch_id: str, enabled: bool, *, request_id: str | None = None
     ) -> PriceWatchEnabledResult:
         """Set one watch's enabled state with a new idempotency key."""
         if not isinstance(watch_id, str) or not watch_id:
@@ -273,6 +307,7 @@ class PriceWatchApiClient:
             f"{WATCHES_PATH}/{quote(watch_id, safe='')}",
             str(uuid4()),
             {"enabled": enabled},
+            request_id=request_id,
         )
         if (
             not isinstance(payload, dict)
@@ -283,12 +318,21 @@ class PriceWatchApiClient:
             raise PriceWatchInvalidResponseError
         return PriceWatchEnabledResult(id=payload["id"], enabled=payload["enabled"])
 
-    async def _async_get_json(self, path: str) -> object:
+    async def _async_get_json(
+        self, path: str, *, request_id: str | None = None
+    ) -> object:
         """Fetch one authenticated JSON response without retaining raw payloads."""
-        return await self._async_request_json("get", path)
+        return await self._async_request_json("get", path, request_id=request_id)
 
-    async def _async_post_json(self, path: str, idempotency_key: str) -> object:
+    async def _async_post_json(
+        self,
+        path: str,
+        idempotency_key: str,
+        *,
+        request_id: str | None = None,
+    ) -> object:
         """Post one authenticated JSON response without retaining raw payloads."""
+        request_id = self._request_id(request_id)
         try:
             async with asyncio.timeout(REQUEST_TIMEOUT_SECONDS):
                 async with self._session.post(
@@ -296,6 +340,7 @@ class PriceWatchApiClient:
                     headers={
                         "Authorization": f"Bearer {self._api_token}",
                         "Idempotency-Key": idempotency_key,
+                        REQUEST_ID_HEADER: request_id,
                     },
                     json={},
                 ) as response:
@@ -319,8 +364,11 @@ class PriceWatchApiClient:
         path: str,
         idempotency_key: str,
         payload: dict[str, bool],
+        *,
+        request_id: str | None = None,
     ) -> object:
         """Patch one authenticated JSON response without retaining raw payloads."""
+        request_id = self._request_id(request_id)
         try:
             async with asyncio.timeout(REQUEST_TIMEOUT_SECONDS):
                 async with self._session.patch(
@@ -328,6 +376,7 @@ class PriceWatchApiClient:
                     headers={
                         "Authorization": f"Bearer {self._api_token}",
                         "Idempotency-Key": idempotency_key,
+                        REQUEST_ID_HEADER: request_id,
                     },
                     json=payload,
                 ) as response:
@@ -351,17 +400,20 @@ class PriceWatchApiClient:
         method: str,
         path: str,
         additional_headers: dict[str, str] | None = None,
+        *,
+        request_id: str | None = None,
     ) -> object:
         """Send an authenticated request without retaining raw payloads."""
         headers = {"Authorization": f"Bearer {self._api_token}"}
         if additional_headers is not None:
             headers.update(additional_headers)
+        headers[REQUEST_ID_HEADER] = self._request_id(request_id)
         request = self._session.get if method == "get" else self._session.post
         try:
             async with asyncio.timeout(REQUEST_TIMEOUT_SECONDS):
                 async with request(
                     f"{self._base_url}{path}",
-                    headers={"Authorization": f"Bearer {self._api_token}"},
+                    headers=headers,
                 ) as response:
                     if response.status in {401, 403}:
                         raise PriceWatchAuthenticationError(response.status)
@@ -381,6 +433,18 @@ class PriceWatchApiClient:
         return payload
 
     @staticmethod
+    def _request_id(value: str | None) -> str:
+        if value is None:
+            return str(uuid4())
+        try:
+            parsed = UUID(value)
+        except (AttributeError, ValueError) as err:
+            raise ValueError("request ID must be a UUID") from err
+        if str(parsed) != value:
+            raise ValueError("request ID must be a canonical UUID")
+        return value
+
+    @staticmethod
     async def _async_api_response_error(
         response: aiohttp.ClientResponse,
     ) -> PriceWatchApiResponseError:
@@ -391,9 +455,13 @@ class PriceWatchApiClient:
         except (aiohttp.ClientError, TypeError, ValueError):
             payload = None
         if isinstance(payload, dict):
-            code = payload.get("code")
-            if isinstance(code, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", code):
-                service_code = code
+            service_code = _trusted_service_code(
+                payload.get("code")
+            ) or _trusted_service_code(
+                payload.get("error", {}).get("code")
+                if isinstance(payload.get("error"), dict)
+                else None
+            )
         return PriceWatchApiResponseError(response.status, service_code)
 
     def _parse_watch(self, value: object) -> PriceWatchWatch:

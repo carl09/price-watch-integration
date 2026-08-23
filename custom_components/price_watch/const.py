@@ -18,6 +18,7 @@ WATCHES_PATH = "/v1/watches"
 EVENTS_PATH = "/v1/events"
 CHECKS_PATH = "/v1/checks"
 REQUEST_TIMEOUT_SECONDS = 10
+REQUEST_ID_HEADER = "request-id"
 SERVICE_CHECK_ALL = "check_all"
 SERVICE_CHECK_WATCH = "check_watch"
 SERVICE_SET_ENABLED = "set_enabled"

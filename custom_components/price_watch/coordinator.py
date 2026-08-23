@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
+from typing import TypeVar
+from uuid import uuid4
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -27,6 +30,7 @@ from .const import COORDINATOR_UPDATE_INTERVAL, DOMAIN
 from .observability import log_failure, log_success
 
 _LOGGER = logging.getLogger(__name__)
+_T = TypeVar("_T")
 
 
 @dataclass(frozen=True)
@@ -61,13 +65,29 @@ class PriceWatchCoordinator(DataUpdateCoordinator[PriceWatchCoordinatorData]):
     async def _async_update_data(self) -> PriceWatchCoordinatorData:
         """Fetch all read-only service facts for Home Assistant."""
         operation = "coordinator_refresh"
-        route = "/v1/summary,/v1/watches,/v1/events"
         try:
-            summary = await self._client.async_get_summary()
-            watches = await self._client.async_get_watches()
-            events = await self._client.async_get_events()
+            summary = await self._async_fetch(
+                operation,
+                "/v1/summary",
+                lambda request_id: self._client.async_get_summary(
+                    request_id=request_id
+                ),
+            )
+            watches = await self._async_fetch(
+                operation,
+                "/v1/watches",
+                lambda request_id: self._client.async_get_watches(
+                    request_id=request_id
+                ),
+            )
+            events = await self._async_fetch(
+                operation,
+                "/v1/events",
+                lambda request_id: self._client.async_get_events(
+                    request_id=request_id
+                ),
+            )
         except PriceWatchAuthenticationError as err:
-            log_failure(operation, route, err)
             raise ConfigEntryAuthFailed from err
         except (
             PriceWatchTimeoutError,
@@ -75,7 +95,6 @@ class PriceWatchCoordinator(DataUpdateCoordinator[PriceWatchCoordinatorData]):
             PriceWatchInvalidResponseError,
             PriceWatchApiResponseError,
         ) as err:
-            log_failure(operation, route, err)
             raise UpdateFailed("Unable to refresh Price Watch service data") from err
         data = PriceWatchCoordinatorData(
             summary=summary,
@@ -83,5 +102,26 @@ class PriceWatchCoordinator(DataUpdateCoordinator[PriceWatchCoordinatorData]):
             events=events,
         )
         self.last_successful_refresh_at = dt_util.utcnow()
-        log_success(operation, route)
+        return data
+
+    async def _async_fetch(
+        self,
+        operation: str,
+        route: str,
+        fetch: Callable[[str], Awaitable[_T]],
+    ) -> _T:
+        """Fetch one route with a unique log-correlated request ID."""
+        request_id = str(uuid4())
+        try:
+            data = await fetch(request_id)
+        except (
+            PriceWatchAuthenticationError,
+            PriceWatchTimeoutError,
+            PriceWatchTransportError,
+            PriceWatchInvalidResponseError,
+            PriceWatchApiResponseError,
+        ) as err:
+            log_failure(operation, route, err, request_id=request_id)
+            raise
+        log_success(operation, route, request_id=request_id)
         return data
