@@ -14,6 +14,7 @@ from homeassistant.util import dt as dt_util
 
 from .api import (
     PriceWatchApiClient,
+    PriceWatchApiResponseError,
     PriceWatchAuthenticationError,
     PriceWatchEvent,
     PriceWatchInvalidResponseError,
@@ -23,6 +24,7 @@ from .api import (
     PriceWatchWatch,
 )
 from .const import COORDINATOR_UPDATE_INTERVAL, DOMAIN
+from .observability import log_failure, log_success
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -58,17 +60,22 @@ class PriceWatchCoordinator(DataUpdateCoordinator[PriceWatchCoordinatorData]):
 
     async def _async_update_data(self) -> PriceWatchCoordinatorData:
         """Fetch all read-only service facts for Home Assistant."""
+        operation = "coordinator_refresh"
+        route = "/v1/summary,/v1/watches,/v1/events"
         try:
             summary = await self._client.async_get_summary()
             watches = await self._client.async_get_watches()
             events = await self._client.async_get_events()
         except PriceWatchAuthenticationError as err:
+            log_failure(operation, route, err)
             raise ConfigEntryAuthFailed from err
         except (
             PriceWatchTimeoutError,
             PriceWatchTransportError,
             PriceWatchInvalidResponseError,
+            PriceWatchApiResponseError,
         ) as err:
+            log_failure(operation, route, err)
             raise UpdateFailed("Unable to refresh Price Watch service data") from err
         data = PriceWatchCoordinatorData(
             summary=summary,
@@ -76,4 +83,5 @@ class PriceWatchCoordinator(DataUpdateCoordinator[PriceWatchCoordinatorData]):
             events=events,
         )
         self.last_successful_refresh_at = dt_util.utcnow()
+        log_success(operation, route)
         return data

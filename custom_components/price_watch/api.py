@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
@@ -28,6 +29,9 @@ class PriceWatchApiError(Exception):
 class PriceWatchAuthenticationError(PriceWatchApiError):
     """The configured token was rejected by the service."""
 
+    def __init__(self, http_status: int | None = None) -> None:
+        self.http_status = http_status
+
 
 class PriceWatchTransportError(PriceWatchApiError):
     """The service could not be reached."""
@@ -39,6 +43,16 @@ class PriceWatchTimeoutError(PriceWatchApiError):
 
 class PriceWatchInvalidResponseError(PriceWatchApiError):
     """The service returned an unexpected health response."""
+
+
+class PriceWatchApiResponseError(PriceWatchApiError):
+    """The service returned a non-success HTTP response."""
+
+    def __init__(
+        self, http_status: int, service_code: str | None = None
+    ) -> None:
+        self.http_status = http_status
+        self.service_code = service_code
 
 
 @dataclass(frozen=True)
@@ -286,11 +300,9 @@ class PriceWatchApiClient:
                     json={},
                 ) as response:
                     if response.status in {401, 403}:
-                        raise PriceWatchAuthenticationError
+                        raise PriceWatchAuthenticationError(response.status)
                     if response.status != 200:
-                        raise PriceWatchInvalidResponseError(
-                            f"HTTP {response.status}"
-                        )
+                        raise await self._async_api_response_error(response)
                     try:
                         return await response.json(content_type=None)
                     except (aiohttp.ClientError, TypeError, ValueError) as err:
@@ -320,11 +332,9 @@ class PriceWatchApiClient:
                     json=payload,
                 ) as response:
                     if response.status in {401, 403}:
-                        raise PriceWatchAuthenticationError
+                        raise PriceWatchAuthenticationError(response.status)
                     if response.status != 200:
-                        raise PriceWatchInvalidResponseError(
-                            f"HTTP {response.status}"
-                        )
+                        raise await self._async_api_response_error(response)
                     try:
                         return await response.json(content_type=None)
                     except (aiohttp.ClientError, TypeError, ValueError) as err:
@@ -354,11 +364,9 @@ class PriceWatchApiClient:
                     headers={"Authorization": f"Bearer {self._api_token}"},
                 ) as response:
                     if response.status in {401, 403}:
-                        raise PriceWatchAuthenticationError
+                        raise PriceWatchAuthenticationError(response.status)
                     if response.status != 200:
-                        raise PriceWatchInvalidResponseError(
-                            f"HTTP {response.status}"
-                        )
+                        raise await self._async_api_response_error(response)
                     try:
                         payload = await response.json(content_type=None)
                     except (aiohttp.ClientError, TypeError, ValueError) as err:
@@ -371,6 +379,22 @@ class PriceWatchApiClient:
             raise PriceWatchTransportError from err
 
         return payload
+
+    @staticmethod
+    async def _async_api_response_error(
+        response: aiohttp.ClientResponse,
+    ) -> PriceWatchApiResponseError:
+        """Extract only a safe machine-readable error code from a response."""
+        service_code: str | None = None
+        try:
+            payload = await response.json(content_type=None)
+        except (aiohttp.ClientError, TypeError, ValueError):
+            payload = None
+        if isinstance(payload, dict):
+            code = payload.get("code")
+            if isinstance(code, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", code):
+                service_code = code
+        return PriceWatchApiResponseError(response.status, service_code)
 
     def _parse_watch(self, value: object) -> PriceWatchWatch:
         if not isinstance(value, dict):

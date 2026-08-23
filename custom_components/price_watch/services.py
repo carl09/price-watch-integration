@@ -10,6 +10,7 @@ from homeassistant.exceptions import HomeAssistantError
 
 from .api import (
     PriceWatchApiClient,
+    PriceWatchApiResponseError,
     PriceWatchAuthenticationError,
     PriceWatchInvalidResponseError,
     PriceWatchTimeoutError,
@@ -30,6 +31,7 @@ from .const import (
     SHOPPING_LIST_ITEM_NAME,
 )
 from .coordinator import PriceWatchCoordinator
+from .observability import log_failure, log_service_failure, log_success
 
 
 def async_register_services(hass: HomeAssistant) -> None:
@@ -101,56 +103,84 @@ def _runtime(hass: HomeAssistant) -> tuple[PriceWatchApiClient, PriceWatchCoordi
 async def _async_check_all(hass: HomeAssistant, call: ServiceCall) -> None:
     """Run due watches, then request an entity refresh."""
     client, coordinator = _runtime(hass)
+    operation = SERVICE_CHECK_ALL
+    route = "/v1/checks"
     try:
         await client.async_check_all()
     except PriceWatchAuthenticationError as err:
+        log_failure(operation, route, err)
         raise HomeAssistantError("Price Watch authentication failed") from err
     except PriceWatchTimeoutError as err:
+        log_failure(operation, route, err)
         raise HomeAssistantError("Price Watch service timed out") from err
     except PriceWatchTransportError as err:
+        log_failure(operation, route, err)
         raise HomeAssistantError("Price Watch service is unavailable") from err
     except PriceWatchInvalidResponseError as err:
-        detail = str(err)
-        message = "Price Watch service returned invalid data"
-        if detail:
-            message = f"{message} ({detail})"
-        raise HomeAssistantError(message) from err
+        log_failure(operation, route, err)
+        raise HomeAssistantError("Price Watch service returned invalid data") from err
+    except PriceWatchApiResponseError as err:
+        log_failure(operation, route, err)
+        raise HomeAssistantError("Price Watch service rejected the request") from err
     await coordinator.async_request_refresh()
+    log_success(operation, route)
 
 
 async def _async_check_watch(hass: HomeAssistant, call: ServiceCall) -> None:
     """Run one watch, then request an entity refresh."""
     client, coordinator = _runtime(hass)
+    watch_id = call.data[ATTR_WATCH_ID]
+    operation = SERVICE_CHECK_WATCH
+    route = "/v1/watches/{watch_id}/check"
     try:
-        await client.async_check_watch(call.data[ATTR_WATCH_ID])
+        await client.async_check_watch(watch_id)
     except PriceWatchAuthenticationError as err:
+        log_failure(operation, route, err, watch_id=watch_id)
         raise HomeAssistantError("Price Watch authentication failed") from err
     except PriceWatchTimeoutError as err:
+        log_failure(operation, route, err, watch_id=watch_id)
         raise HomeAssistantError("Price Watch service timed out") from err
     except PriceWatchTransportError as err:
+        log_failure(operation, route, err, watch_id=watch_id)
         raise HomeAssistantError("Price Watch service is unavailable") from err
     except PriceWatchInvalidResponseError as err:
+        log_failure(operation, route, err, watch_id=watch_id)
         raise HomeAssistantError("Price Watch service returned invalid data") from err
+    except PriceWatchApiResponseError as err:
+        log_failure(operation, route, err, watch_id=watch_id)
+        raise HomeAssistantError("Price Watch service rejected the request") from err
     await coordinator.async_request_refresh()
+    log_success(operation, route, watch_id=watch_id)
 
 
 async def _async_set_enabled(hass: HomeAssistant, call: ServiceCall) -> None:
     """Set one watch's enabled state, then request an entity refresh."""
     client, coordinator = _runtime(hass)
+    watch_id = call.data[ATTR_WATCH_ID]
+    operation = SERVICE_SET_ENABLED
+    route = "/v1/watches/{watch_id}"
     try:
         await client.async_set_enabled(
-            call.data[ATTR_WATCH_ID],
+            watch_id,
             call.data[ATTR_ENABLED],
         )
     except PriceWatchAuthenticationError as err:
+        log_failure(operation, route, err, watch_id=watch_id)
         raise HomeAssistantError("Price Watch authentication failed") from err
     except PriceWatchTimeoutError as err:
+        log_failure(operation, route, err, watch_id=watch_id)
         raise HomeAssistantError("Price Watch service timed out") from err
     except PriceWatchTransportError as err:
+        log_failure(operation, route, err, watch_id=watch_id)
         raise HomeAssistantError("Price Watch service is unavailable") from err
     except PriceWatchInvalidResponseError as err:
+        log_failure(operation, route, err, watch_id=watch_id)
         raise HomeAssistantError("Price Watch service returned invalid data") from err
+    except PriceWatchApiResponseError as err:
+        log_failure(operation, route, err, watch_id=watch_id)
+        raise HomeAssistantError("Price Watch service rejected the request") from err
     await coordinator.async_request_refresh()
+    log_success(operation, route, watch_id=watch_id)
 
 
 async def _async_add_to_shopping_list(
@@ -158,11 +188,28 @@ async def _async_add_to_shopping_list(
 ) -> None:
     """Add a selected coordinator watch to Home Assistant's Shopping List."""
     _, coordinator = _runtime(hass)
+    watch_id = call.data[ATTR_WATCH_ID]
+    operation = SERVICE_ADD_TO_SHOPPING_LIST
+    route = "shopping_list.add_item"
     if not hass.services.has_service(
         SHOPPING_LIST_DOMAIN, SHOPPING_LIST_ADD_ITEM
     ):
+        log_service_failure(
+            operation,
+            route,
+            failure="api_response",
+            watch_id=watch_id,
+            service_code="shopping_list_unavailable",
+        )
         raise HomeAssistantError("Shopping List is unavailable")
     if coordinator.data is None:
+        log_service_failure(
+            operation,
+            route,
+            failure="invalid_response",
+            watch_id=watch_id,
+            service_code="coordinator_data_unavailable",
+        )
         raise HomeAssistantError("Price Watch data is unavailable")
     watch = next(
         (
@@ -173,6 +220,13 @@ async def _async_add_to_shopping_list(
         None,
     )
     if watch is None:
+        log_service_failure(
+            operation,
+            route,
+            failure="api_response",
+            watch_id=watch_id,
+            service_code="watch_not_found",
+        )
         raise HomeAssistantError("Price Watch watch was not found")
 
     parts = [f"Buy: {watch.title}"]
@@ -196,4 +250,12 @@ async def _async_add_to_shopping_list(
             blocking=True,
         )
     except HomeAssistantError as err:
+        log_service_failure(
+            operation,
+            route,
+            failure="api_response",
+            watch_id=watch_id,
+            service_code="shopping_list_add_failed",
+        )
         raise HomeAssistantError("Unable to add item to Shopping List") from err
+    log_success(operation, route, watch_id=watch_id)
