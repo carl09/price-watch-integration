@@ -28,6 +28,7 @@ async def async_setup_entry(
     async_add_entities(
         [
             PriceWatchTargetMatchBinarySensor(coordinator, entry),
+            PriceWatchMonitorHealthBinarySensor(coordinator, entry),
             *manager.add_new_watch_binary_sensors(),
         ]
     )
@@ -62,6 +63,42 @@ class PriceWatchTargetMatchBinarySensor(
         return {
             "target_matches": summary.target_matches,
             "target_matching_watch_ids": list(summary.target_matching_watch_ids),
+            "latest_check_at": summary.latest_check_at,
+        }
+
+
+class PriceWatchMonitorHealthBinarySensor(
+    CoordinatorEntity[PriceWatchCoordinator], BinarySensorEntity
+):
+    """Expose only service-reported monitoring health facts."""
+
+    _attr_name = "Price Watch Monitor Health"
+
+    def __init__(
+        self, coordinator: PriceWatchCoordinator, entry: ConfigEntry
+    ) -> None:
+        """Set a stable aggregate monitor-health entity identity."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_monitor_health"
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return healthy only when service stale and failed counts are zero."""
+        if not self.available or self.coordinator.data is None:
+            return None
+        summary = self.coordinator.data.summary
+        return summary.stale == 0 and summary.failed == 0
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object] | None:
+        """Expose safe aggregate service facts for dashboards and automations."""
+        if not self.available or self.coordinator.data is None:
+            return None
+        summary = self.coordinator.data.summary
+        return {
+            "stale": summary.stale,
+            "failed": summary.failed,
+            "enabled_watches": summary.enabled_watches,
             "latest_check_at": summary.latest_check_at,
         }
 

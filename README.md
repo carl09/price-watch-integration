@@ -70,6 +70,66 @@ state-change automation against the event ID to present notifications; do not
 recalculate price or target conditions in YAML. The entity never exposes the
 API token, raw response body, service configuration, or retailer data.
 
+## Monitor health and failure notifications
+
+`binary_sensor.price_watch_monitor_health` is `on` only when the Price Watch
+service summary reports zero stale and zero failed enabled watches. It is `off`
+when either count is non-zero and unavailable when Home Assistant cannot
+refresh the service. Its safe attributes are the service stale/failed counts,
+enabled-watch count, and latest-check timestamp.
+
+`sensor.price_watch_latest_failure_event` exposes the immutable ID of the most
+recent service-produced `check_failed` event. It is `none` when the service has
+no failure event and unavailable when the coordinator cannot refresh. Its safe
+attributes are the event watch ID, occurrence time, deduplication key, type,
+and a trusted failure error code when present.
+
+Use the immutable event ID and health transition directly in a persistent
+notification automation. This does not recalculate monitoring logic or include
+tokens, retailer URLs, or raw error data:
+
+```yaml
+id: price_watch_monitor_notifications
+alias: Price Watch monitoring notifications
+mode: single
+triggers:
+  - trigger: state
+    entity_id: sensor.price_watch_latest_failure_event
+    id: failure
+  - trigger: state
+    entity_id: binary_sensor.price_watch_monitor_health
+    from: "off"
+    to: "on"
+    id: recovery
+conditions: []
+actions:
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: failure
+          - condition: template
+            value_template: >-
+              {{ trigger.from_state is not none
+                 and trigger.to_state is not none
+                 and trigger.from_state.state not in ['unknown', 'unavailable']
+                 and trigger.to_state.state not in ['unknown', 'unavailable', 'none'] }}
+        sequence:
+          - action: persistent_notification.create
+            data:
+              title: Price Watch monitoring failure
+              message: >-
+                Price Watch recorded monitoring failure event
+                {{ trigger.to_state.state }}.
+      - conditions:
+          - condition: trigger
+            id: recovery
+        sequence:
+          - action: persistent_notification.create
+            data:
+              title: Price Watch monitoring recovered
+              message: Price Watch monitor health recovered.
+```
+
 ## Schedule checks in Home Assistant
 
 `price_watch.check_all` runs a check when you invoke it. To run it once daily,

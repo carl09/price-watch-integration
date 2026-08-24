@@ -17,6 +17,18 @@ from .api import PriceWatchEvent, PriceWatchWatch
 from .const import DATA_COORDINATORS, DATA_SENSOR_MANAGERS, DOMAIN
 from .coordinator import PriceWatchCoordinator
 
+_TRUSTED_FAILURE_ERROR_CODES = frozenset(
+    {
+        "adapter_exception",
+        "blocked",
+        "error",
+        "invalid_request",
+        "not_found",
+        "rate_limited",
+        "unsupported",
+    }
+)
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -31,6 +43,7 @@ async def async_setup_entry(
         [
             PriceWatchSummarySensor(coordinator, entry),
             PriceWatchLatestTargetEventSensor(coordinator, entry),
+            PriceWatchLatestFailureEventSensor(coordinator, entry),
             *manager.add_new_watch_sensors(),
         ]
     )
@@ -124,6 +137,60 @@ class PriceWatchLatestTargetEventSensor(
             and target_price_cents >= 0
         ):
             attributes["target_price_cents"] = target_price_cents
+        return attributes
+
+
+class PriceWatchLatestFailureEventSensor(
+    CoordinatorEntity[PriceWatchCoordinator], SensorEntity
+):
+    """Expose the latest immutable service-produced check-failure event."""
+
+    _attr_name = "Price Watch Latest Failure Event"
+
+    def __init__(
+        self, coordinator: PriceWatchCoordinator, entry: ConfigEntry
+    ) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_latest_failure_event"
+
+    def _event(self) -> PriceWatchEvent | None:
+        """Select a service event without deriving monitoring failures locally."""
+        if self.coordinator.data is None:
+            return None
+        return max(
+            (
+                event
+                for event in self.coordinator.data.events
+                if event.type == "check_failed"
+            ),
+            key=lambda event: (event.occurred_at, event.id),
+            default=None,
+        )
+
+    @property
+    def native_value(self) -> str:
+        """Return the immutable failure event ID for notification automations."""
+        event = self._event()
+        return event.id if event is not None else "none"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object] | None:
+        """Expose only allow-listed immutable failure-event details."""
+        event = self._event()
+        if event is None:
+            return None
+        attributes: dict[str, object] = {
+            "watch_id": event.watch_id,
+            "occurred_at": event.occurred_at,
+            "deduplication_key": event.deduplication_key,
+            "event_type": event.type,
+        }
+        error_code = event.data.get("error_code")
+        if (
+            isinstance(error_code, str)
+            and error_code in _TRUSTED_FAILURE_ERROR_CODES
+        ):
+            attributes["error_code"] = error_code
         return attributes
 
 
