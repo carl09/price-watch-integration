@@ -200,6 +200,7 @@ async def test_two_watches_create_distinct_devices_and_linked_entities(hass):
             ("sensor", f"watch_{watch.id}_target_price"),
             ("sensor", f"watch_{watch.id}_status"),
             ("sensor", f"watch_{watch.id}_last_checked"),
+            ("image", f"watch_{watch.id}_product_image"),
             ("binary_sensor", f"watch_{watch.id}_target_match"),
         ):
             entity_id = _entity_id(entity_registry, platform, unique_id)
@@ -284,8 +285,8 @@ async def test_watch_entities_keep_legacy_ids_and_use_concise_names(hass):
     await _unload_entry(hass, entry)
 
 
-async def test_primary_sensor_uses_validated_local_product_image_endpoint(hass):
-    """The primary entity exposes only the authenticated HA proxy route."""
+async def test_primary_sensor_does_not_expose_image_capability_data(hass):
+    """Product image data belongs only to the linked HA image entity."""
     watch = _watch(
         "watch-one",
         product_image_url=(
@@ -298,7 +299,6 @@ async def test_primary_sensor_uses_validated_local_product_image_endpoint(hass):
     state = hass.states.get(_entity_id(entity_registry, "sensor", "watch_watch-one"))
 
     assert state is not None
-    assert state.attributes["entity_picture"] == "/api/price_watch/image/watch-one"
     assert "price-watch.test" not in str(state.attributes)
     assert "token=" not in str(state.attributes)
     await _unload_entry(hass, entry)

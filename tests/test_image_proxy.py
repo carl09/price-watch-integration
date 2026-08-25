@@ -1,17 +1,17 @@
-"""Regression tests for the authenticated Home Assistant product-image proxy."""
+"""Regression tests for guarded product images and HA's standard image proxy."""
 
 from __future__ import annotations
 
-from unittest.mock import ANY, AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 import pytest
-from aiohttp import web
+from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.price_watch.api import (
     PriceWatchApiClient,
+    PriceWatchApiResponseError,
     PriceWatchCurrentObservation,
-    PriceWatchEvent,
     PriceWatchInvalidResponseError,
     PriceWatchProductImage,
     PriceWatchSummary,
@@ -24,8 +24,8 @@ from custom_components.price_watch.const import (
     CONF_BASE_URL,
     DATA_CLIENTS,
     DATA_COORDINATORS,
+    DATA_IMAGE_MANAGERS,
     DATA_IMAGE_PROXIES,
-    DATA_IMAGE_PROXY_VIEW,
     DOMAIN,
 )
 from custom_components.price_watch.coordinator import PriceWatchCoordinatorData
@@ -53,9 +53,10 @@ class _ImageResponse:
         body: bytes,
         content_type: str,
         *,
+        status: int = 200,
         content_length: int | None = None,
     ) -> None:
-        self.status = 200
+        self.status = status
         self.headers = {"Content-Type": content_type}
         self.content_length = content_length
         self.content = _ImageContent(body)
@@ -134,7 +135,6 @@ def _watch(
 
 
 async def _setup_entry(hass, watches: tuple[PriceWatchWatch, ...]):
-    hass.http = MagicMock()
     config_entry = _entry()
     config_entry.add_to_hass(hass)
     with patch(
@@ -157,84 +157,130 @@ async def _unload_entry(hass, config_entry) -> None:
     await hass.async_block_till_done()
 
 
-async def test_entity_picture_uses_local_proxy_without_capability_data(hass):
-    """Entity state must not expose the App hostname or capability token."""
-    entry = await _setup_entry(hass, (_watch(),))
-
-    state = hass.states.get("sensor.heritage_shorts_canyon_xs")
-    assert state is not None
-    assert state.attributes["entity_picture"] == "/api/price_watch/image/watch-one"
-    assert "price-watch.test" not in str(state.attributes)
-    assert _CAPABILITY_TOKEN not in str(state.attributes)
-
-    view = hass.data[DOMAIN][DATA_IMAGE_PROXY_VIEW]
-    assert view.url == "/api/price_watch/image/{watch_id}"
-    assert view.requires_auth is True
-    await _unload_entry(hass, entry)
-
-
-async def test_image_proxy_rejects_unknown_and_removed_watches(hass):
-    """Only watches in the current coordinator snapshot can be served."""
-    entry = await _setup_entry(hass, (_watch(),))
-    view = hass.data[DOMAIN][DATA_IMAGE_PROXY_VIEW]
-    client = hass.data[DOMAIN][DATA_CLIENTS][entry.entry_id]
-    client.async_get_product_image = AsyncMock()
-
-    with pytest.raises(web.HTTPNotFound):
-        await view.get(MagicMock(), "unknown-watch")
-    assert client.async_get_product_image.await_count == 0
-
-    coordinator = hass.data[DOMAIN][DATA_COORDINATORS][entry.entry_id]
-    coordinator.async_set_updated_data(
-        PriceWatchCoordinatorData(summary=_summary(), watches=(), events=())
+def _image_entity_id(hass) -> str:
+    entity_id = er.async_get(hass).async_get_entity_id(
+        "image", DOMAIN, "watch_watch-one_product_image"
     )
-    with pytest.raises(web.HTTPNotFound):
-        await view.get(MagicMock(), "watch-one")
-    assert client.async_get_product_image.await_count == 0
-    await _unload_entry(hass, entry)
+    assert entity_id is not None
+    return entity_id
 
 
-async def test_image_proxy_fetches_only_approved_capability_and_returns_bytes(hass):
-    """The view passes only the coordinator-held capability URL to the client."""
+async def test_ha_standard_image_proxy_accepts_its_managed_token(
+    hass, hass_client_no_auth
+):
+    """The normal HA image route serves guarded bytes with its own token."""
     entry = await _setup_entry(hass, (_watch(),))
-    view = hass.data[DOMAIN][DATA_IMAGE_PROXY_VIEW]
     client = hass.data[DOMAIN][DATA_CLIENTS][entry.entry_id]
     client.async_get_product_image = AsyncMock(
         return_value=PriceWatchProductImage(b"image-data", "image/jpeg")
     )
+    image_entity_id = _image_entity_id(hass)
+    state = hass.states.get(image_entity_id)
+    assert state is not None
+    picture_url = state.attributes["entity_picture"]
 
-    response = await view.get(MagicMock(), "watch-one")
+    assert picture_url.startswith(f"/api/image_proxy/{image_entity_id}?token=")
+    assert "/api/price_watch/image/" not in picture_url
+    assert "price-watch.test" not in str(state.attributes)
+    assert _CAPABILITY_TOKEN not in str(state.attributes)
+
+    response = await (await hass_client_no_auth()).get(picture_url)
 
     assert response.status == 200
-    assert response.body == b"image-data"
+    assert await response.read() == b"image-data"
     assert response.content_type == "image/jpeg"
-    assert response.headers["Cache-Control"] == "no-store"
     client.async_get_product_image.assert_awaited_once_with(
         _CAPABILITY_URL, request_id=ANY
     )
     await _unload_entry(hass, entry)
 
 
-async def test_image_proxy_uses_safe_failure_for_upstream_errors(hass, caplog):
-    """Upstream errors must not reveal the capability URL in response or logs."""
+async def test_ha_image_proxy_rejects_missing_and_invalid_tokens(
+    hass, hass_client_no_auth
+):
+    """HA's built-in image endpoint owns standard browser token validation."""
     entry = await _setup_entry(hass, (_watch(),))
-    view = hass.data[DOMAIN][DATA_IMAGE_PROXY_VIEW]
+    image_entity_id = _image_entity_id(hass)
+    client = await hass_client_no_auth()
+
+    missing_token = await client.get(f"/api/image_proxy/{image_entity_id}")
+    invalid_token = await client.get(
+        f"/api/image_proxy/{image_entity_id}?token=not-a-valid-token"
+    )
+
+    assert missing_token.status == 403
+    assert invalid_token.status == 403
+    await _unload_entry(hass, entry)
+
+
+async def test_old_custom_image_proxy_route_is_not_registered(hass, hass_client):
+    """The previous custom route is absent after switching to ImageEntity."""
+    entry = await _setup_entry(hass, (_watch(),))
+
+    response = await (await hass_client()).get("/api/price_watch/image/watch-one")
+
+    assert response.status == 404
+    await _unload_entry(hass, entry)
+
+
+async def test_image_platform_unload_removes_its_manager(hass):
+    """The image platform removes its coordinator listener during unload."""
+    entry = await _setup_entry(hass, (_watch(),))
+
+    assert entry.entry_id in hass.data[DOMAIN][DATA_IMAGE_MANAGERS]
+
+    await _unload_entry(hass, entry)
+
+    assert DOMAIN not in hass.data
+
+
+async def test_ha_image_proxy_cannot_serve_unknown_or_removed_watches(
+    hass, hass_client
+):
+    """Unknown images 404; removed watch images fail without upstream access."""
+    entry = await _setup_entry(hass, (_watch(),))
+    client = hass.data[DOMAIN][DATA_CLIENTS][entry.entry_id]
+    client.async_get_product_image = AsyncMock()
+    web_client = await hass_client()
+
+    unknown = await web_client.get("/api/image_proxy/image.unknown?token=invalid")
+    assert unknown.status == 404
+
+    image_entity_id = _image_entity_id(hass)
+    picture_url = hass.states.get(image_entity_id).attributes["entity_picture"]
+    coordinator = hass.data[DOMAIN][DATA_COORDINATORS][entry.entry_id]
+    coordinator.async_set_updated_data(
+        PriceWatchCoordinatorData(summary=_summary(), watches=(), events=())
+    )
+    await hass.async_block_till_done()
+    removed = await web_client.get(picture_url)
+
+    assert removed.status == 500
+    assert client.async_get_product_image.await_count == 0
+    await _unload_entry(hass, entry)
+
+
+async def test_ha_image_proxy_returns_safe_upstream_failure(hass, hass_client, caplog):
+    """A failed guarded fetch cannot disclose private capability information."""
+    entry = await _setup_entry(hass, (_watch(),))
     client = hass.data[DOMAIN][DATA_CLIENTS][entry.entry_id]
     client.async_get_product_image = AsyncMock(side_effect=PriceWatchTransportError)
+    image_entity_id = _image_entity_id(hass)
+    picture_url = hass.states.get(image_entity_id).attributes["entity_picture"]
 
-    with pytest.raises(web.HTTPBadGateway) as exc_info:
-        await view.get(MagicMock(), "watch-one")
+    response = await (await hass_client()).get(picture_url)
 
-    assert _CAPABILITY_URL not in str(exc_info.value)
+    assert response.status == 500
+    assert _CAPABILITY_URL not in await response.text()
     assert _CAPABILITY_TOKEN not in caplog.text
     assert "price-watch.test" not in caplog.text
     await _unload_entry(hass, entry)
 
 
-async def test_image_proxy_invalidates_cache_for_observation_and_image_changes(hass):
+async def test_image_cache_invalidates_for_observation_and_image_changes(hass):
     """A new observation or capability URL cannot reuse stale cached bytes."""
     entry = await _setup_entry(hass, (_watch(),))
-    proxy = hass.data[DOMAIN][DATA_IMAGE_PROXIES][entry.entry_id]
+    image_cache = hass.data[DOMAIN][DATA_IMAGE_PROXIES][entry.entry_id]
     client = hass.data[DOMAIN][DATA_CLIENTS][entry.entry_id]
     client.async_get_product_image = AsyncMock(
         side_effect=(
@@ -244,8 +290,8 @@ async def test_image_proxy_invalidates_cache_for_observation_and_image_changes(h
         )
     )
 
-    first = await proxy.async_get_image("watch-one", request_id="a" * 36)
-    cached = await proxy.async_get_image("watch-one", request_id="b" * 36)
+    first = await image_cache.async_get_image("watch-one", request_id="a" * 36)
+    cached = await image_cache.async_get_image("watch-one", request_id="b" * 36)
     assert first.content == b"first"
     assert cached.content == b"first"
 
@@ -257,7 +303,7 @@ async def test_image_proxy_invalidates_cache_for_observation_and_image_changes(h
             events=(),
         )
     )
-    refreshed = await proxy.async_get_image("watch-one", request_id="c" * 36)
+    refreshed = await image_cache.async_get_image("watch-one", request_id="c" * 36)
     assert refreshed.content == b"second"
 
     changed_url = _CAPABILITY_URL.replace("a" * 43, "b" * 43)
@@ -273,38 +319,42 @@ async def test_image_proxy_invalidates_cache_for_observation_and_image_changes(h
             events=(),
         )
     )
-    changed = await proxy.async_get_image("watch-one", request_id="d" * 36)
+    changed = await image_cache.async_get_image("watch-one", request_id="d" * 36)
     assert changed.content == b"third"
     assert client.async_get_product_image.await_count == 3
     await _unload_entry(hass, entry)
 
 
 @pytest.mark.parametrize(
-    ("content_type", "body", "content_length"),
+    ("content_type", "body", "content_length", "status", "error_type"),
     (
-        ("", b"image", None),
-        ("text/html", b"<html>", None),
-        ("application/octet-stream", b"image", None),
-        ("image/jpeg", b"image", 5 * 1024 * 1024 + 1),
-        ("image/png", b"x" * (5 * 1024 * 1024 + 1), None),
+        ("", b"image", None, 200, PriceWatchInvalidResponseError),
+        ("text/html", b"<html>", None, 200, PriceWatchInvalidResponseError),
+        ("application/octet-stream", b"image", None, 200, PriceWatchInvalidResponseError),
+        ("image/jpeg", b"image", 5 * 1024 * 1024 + 1, 200, PriceWatchInvalidResponseError),
+        ("image/png", b"x" * (5 * 1024 * 1024 + 1), None, 200, PriceWatchInvalidResponseError),
+        ("image/jpeg", b"", None, 302, PriceWatchApiResponseError),
     ),
 )
-async def test_image_client_rejects_invalid_or_oversized_responses(
-    content_type, body, content_length
+async def test_image_client_rejects_invalid_oversized_and_redirect_responses(
+    content_type, body, content_length, status, error_type
 ):
-    """The client bounds image bytes and accepts only explicitly supported media."""
+    """The client bounds bytes, validates media, and never follows redirects."""
     session = _ImageSession(
-        _ImageResponse(body, content_type, content_length=content_length)
+        _ImageResponse(
+            body, content_type, status=status, content_length=content_length
+        )
     )
     client = PriceWatchApiClient(
         "http://price-watch.test:8787", "test-token", session
     )
 
-    with pytest.raises(PriceWatchInvalidResponseError) as exc_info:
+    with pytest.raises(error_type) as exc_info:
         await client.async_get_product_image(_CAPABILITY_URL)
 
     assert _CAPABILITY_URL not in str(exc_info.value)
     assert session.requests[0]["url"] == _CAPABILITY_URL
+    assert session.requests[0]["allow_redirects"] is False
 
 
 async def test_image_client_returns_allowed_image_without_redirects():
@@ -319,13 +369,9 @@ async def test_image_client_returns_allowed_image_without_redirects():
     image = await client.async_get_product_image(_CAPABILITY_URL)
 
     assert image == PriceWatchProductImage(b"image", "image/webp")
-    assert session.requests == [
-        {
-            "url": _CAPABILITY_URL,
-            "headers": {
-                "Authorization": "Bearer test-token",
-                "request-id": ANY,
-            },
-            "allow_redirects": False,
-        }
-    ]
+    assert len(session.requests) == 1
+    request = session.requests[0]
+    assert request["url"] == _CAPABILITY_URL
+    assert "Authorization" in request["headers"]
+    assert request["headers"]["request-id"] == ANY
+    assert request["allow_redirects"] is False

@@ -1,4 +1,4 @@
-"""Authenticated Home Assistant proxy for Price Watch product images."""
+"""Guarded Price Watch product-image retrieval and caching."""
 
 from __future__ import annotations
 
@@ -6,23 +6,12 @@ import asyncio
 from dataclasses import dataclass
 from uuid import uuid4
 
-from aiohttp import web
-from homeassistant.components.http import HomeAssistantView
-from homeassistant.core import HomeAssistant
-
 from .api import (
     PriceWatchApiClient,
-    PriceWatchApiResponseError,
-    PriceWatchAuthenticationError,
-    PriceWatchInvalidResponseError,
     PriceWatchProductImage,
-    PriceWatchTimeoutError,
-    PriceWatchTransportError,
     PriceWatchWatch,
 )
-from .const import DATA_IMAGE_PROXIES, DOMAIN
 from .coordinator import PriceWatchCoordinator
-from .observability import log_failure, log_success
 
 
 class PriceWatchImageUnavailable(Exception):
@@ -38,7 +27,7 @@ class _CachedProductImage:
     image: PriceWatchProductImage
 
 
-class PriceWatchImageProxy:
+class PriceWatchImageCache:
     """Fetch and cache only image capabilities present in coordinator data."""
 
     def __init__(
@@ -121,58 +110,3 @@ class PriceWatchImageProxy:
             and current_watch.current_observation_id
             == fetched_watch.current_observation_id
         )
-
-
-class PriceWatchImageProxyView(HomeAssistantView):
-    """Serve cached Price Watch images through authenticated Home Assistant."""
-
-    url = "/api/price_watch/image/{watch_id}"
-    name = "api:price_watch:image"
-    requires_auth = True
-
-    def __init__(self, hass: HomeAssistant) -> None:
-        """Retain Home Assistant only; image sources remain coordinator-owned."""
-        self._hass = hass
-
-    async def get(self, request: web.Request, watch_id: str) -> web.Response:
-        """Return one approved image or a generic HTTP failure."""
-        proxy = self._image_proxy()
-        if proxy is None:
-            raise web.HTTPNotFound
-        request_id = str(uuid4())
-        try:
-            image = await proxy.async_get_image(watch_id, request_id=request_id)
-        except PriceWatchImageUnavailable:
-            raise web.HTTPNotFound from None
-        except (
-            PriceWatchAuthenticationError,
-            PriceWatchTimeoutError,
-            PriceWatchTransportError,
-            PriceWatchInvalidResponseError,
-            PriceWatchApiResponseError,
-            ValueError,
-        ) as err:
-            log_failure(
-                "image_proxy",
-                "/v1/watches/{watch_id}/image",
-                err,
-                watch_id=watch_id,
-                request_id=request_id,
-            )
-            raise web.HTTPBadGateway from None
-        log_success(
-            "image_proxy",
-            "/v1/watches/{watch_id}/image",
-            watch_id=watch_id,
-            request_id=request_id,
-        )
-        return web.Response(
-            body=image.content,
-            content_type=image.content_type,
-            headers={"Cache-Control": "no-store"},
-        )
-
-    def _image_proxy(self) -> PriceWatchImageProxy | None:
-        """Return the configured integration proxy without taking request input."""
-        proxies = self._hass.data.get(DOMAIN, {}).get(DATA_IMAGE_PROXIES, {})
-        return next(iter(proxies.values()), None)
