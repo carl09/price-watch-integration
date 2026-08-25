@@ -285,17 +285,22 @@ async def test_watch_entities_keep_legacy_ids_and_use_concise_names(hass):
 
 
 async def test_primary_sensor_uses_validated_local_product_image_endpoint(hass):
-    """The primary entity exposes a same-service image endpoint only."""
+    """The primary entity exposes only the authenticated HA proxy route."""
     watch = _watch(
         "watch-one",
-        product_image_url="http://price-watch.test:8787/v1/watches/watch-one/image",
+        product_image_url=(
+            "http://price-watch.test:8787/v1/watches/watch-one/image?"
+            "token=" + "a" * 43
+        ),
     )
     entry = await _setup_entry(hass, (watch,))
     entity_registry = er.async_get(hass)
     state = hass.states.get(_entity_id(entity_registry, "sensor", "watch_watch-one"))
 
     assert state is not None
-    assert state.attributes["entity_picture"] == watch.product_image_url
+    assert state.attributes["entity_picture"] == "/api/price_watch/image/watch-one"
+    assert "price-watch.test" not in str(state.attributes)
+    assert "token=" not in str(state.attributes)
     await _unload_entry(hass, entry)
 
 

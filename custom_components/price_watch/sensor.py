@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from urllib.parse import quote
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.config_entries import ConfigEntry
@@ -286,9 +287,11 @@ class PriceWatchWatchSensor(PriceWatchWatchEntity, SensorEntity):
 
     @property
     def entity_picture(self) -> str | None:
-        """Use only the validated local Price Watch image endpoint."""
+        """Expose only the authenticated Home Assistant image proxy path."""
         watch = self._watch()
-        return watch.product_image_url if watch is not None else None
+        if watch is None or watch.product_image_url is None:
+            return None
+        return f"/api/{DOMAIN}/image/{quote(watch.id, safe='')}"
 
     @property
     def extra_state_attributes(self) -> dict[str, object] | None:

@@ -147,6 +147,14 @@ class PriceWatchEnabledResult:
     enabled: bool
 
 
+@dataclass(frozen=True)
+class PriceWatchProductImage:
+    """Validated product-image bytes fetched from the Price Watch service."""
+
+    content: bytes
+    content_type: str
+
+
 _TRUSTED_SERVICE_CODES = frozenset(
     {
         "idempotency_conflict",
@@ -159,6 +167,10 @@ _TRUSTED_SERVICE_CODES = frozenset(
         "validation_error",
     }
 )
+_ALLOWED_PRODUCT_IMAGE_CONTENT_TYPES = frozenset(
+    {"image/jpeg", "image/png", "image/webp"}
+)
+_MAX_PRODUCT_IMAGE_BYTES = 5 * 1024 * 1024
 
 
 def _trusted_service_code(value: object) -> str | None:
@@ -268,6 +280,56 @@ class PriceWatchApiClient:
         if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
             raise PriceWatchInvalidResponseError
         return tuple(self._parse_event(item) for item in payload["data"])
+
+    async def async_get_product_image(
+        self, product_image_url: str, *, request_id: str | None = None
+    ) -> PriceWatchProductImage:
+        """Fetch one previously validated Price Watch image capability URL."""
+        if (
+            not isinstance(product_image_url, str)
+            or self._parse_product_image_url(product_image_url) != product_image_url
+        ):
+            raise ValueError("product image URL must be a validated capability URL")
+
+        headers = {
+            "Authorization": f"Bearer {self._api_token}",
+            REQUEST_ID_HEADER: self._request_id(request_id),
+        }
+        try:
+            async with asyncio.timeout(REQUEST_TIMEOUT_SECONDS):
+                async with self._session.get(
+                    product_image_url,
+                    headers=headers,
+                    allow_redirects=False,
+                ) as response:
+                    if response.status in {401, 403}:
+                        raise PriceWatchAuthenticationError(response.status)
+                    if response.status != 200:
+                        raise PriceWatchApiResponseError(response.status)
+                    content_type = response.headers.get("Content-Type", "").split(
+                        ";", 1
+                    )[0].strip().lower()
+                    if content_type not in _ALLOWED_PRODUCT_IMAGE_CONTENT_TYPES:
+                        raise PriceWatchInvalidResponseError
+                    content_length = response.content_length
+                    if (
+                        content_length is not None
+                        and content_length > _MAX_PRODUCT_IMAGE_BYTES
+                    ):
+                        raise PriceWatchInvalidResponseError
+                    content = await response.content.read(
+                        _MAX_PRODUCT_IMAGE_BYTES + 1
+                    )
+                    if len(content) > _MAX_PRODUCT_IMAGE_BYTES:
+                        raise PriceWatchInvalidResponseError
+                    return PriceWatchProductImage(
+                        content=content,
+                        content_type=content_type,
+                    )
+        except TimeoutError as err:
+            raise PriceWatchTimeoutError from err
+        except aiohttp.ClientError as err:
+            raise PriceWatchTransportError from err
 
     async def async_check_all(self, *, request_id: str | None = None) -> None:
         """Run due watches with a new idempotency key.
@@ -541,10 +603,9 @@ class PriceWatchApiClient:
     def _parse_product_image_url(self, value: object) -> str | None:
         """Accept only a Price Watch image endpoint, never a retailer URL.
 
-        The App returns its image capability as a relative URL so its internal
-        hostname and token never need to be persisted by the service. Resolve
-        that narrow, authenticated endpoint against the configured service
-        base URL before exposing it to Home Assistant.
+        The App returns its image capability as a relative URL. Resolve that
+        narrow endpoint against the configured service base URL so the
+        integration can fetch it internally.
         """
         if value is None:
             return None
@@ -561,7 +622,6 @@ class PriceWatchApiClient:
                 and bool(image_url.netloc)
                 and not image_url.username
                 and not image_url.password
-                and not image_url.query
                 and not image_url.fragment
                 and image_url.hostname == base_url.hostname
                 and image_url.port == base_url.port
@@ -571,6 +631,14 @@ class PriceWatchApiClient:
             valid_url = False
         if not valid_url:
             raise PriceWatchInvalidResponseError
+
+        if image_url.query:
+            return self._parse_relative_product_image_url(
+                urlsplit(
+                    urlunsplit(("", "", image_url.path, image_url.query, ""))
+                ),
+                base_url,
+            )
 
         base_path = base_url.path.rstrip("/")
         allowed_path_prefix = f"{base_path}/v1/" if base_path else "/v1/"
