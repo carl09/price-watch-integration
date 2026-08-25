@@ -14,6 +14,7 @@ from .const import (
     DATA_BINARY_SENSOR_MANAGERS,
     DATA_CLIENTS,
     DATA_COORDINATORS,
+    DATA_IMAGE_ENTITY_IDS,
     DATA_IMAGE_MANAGERS,
     DATA_IMAGE_PROXIES,
     DATA_SENSOR_MANAGERS,
@@ -46,6 +47,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     runtime_data.setdefault(DATA_IMAGE_PROXIES, {})[entry.entry_id] = (
         PriceWatchImageCache(coordinator, client)
     )
+    runtime_data.setdefault(DATA_IMAGE_ENTITY_IDS, {})[entry.entry_id] = {}
     await hass.config_entries.async_forward_entry_setups(
         entry, ["sensor", "binary_sensor", "image"]
     )
@@ -71,6 +73,7 @@ def _cleanup_entry_runtime_data(hass: HomeAssistant, entry: ConfigEntry) -> None
     clients = domain_data.get(DATA_CLIENTS)
     coordinators = domain_data.get(DATA_COORDINATORS)
     image_proxies = domain_data.get(DATA_IMAGE_PROXIES)
+    image_entity_ids = domain_data.get(DATA_IMAGE_ENTITY_IDS)
     image_managers = domain_data.get(DATA_IMAGE_MANAGERS)
     sensor_managers = domain_data.get(DATA_SENSOR_MANAGERS)
     binary_sensor_managers = domain_data.get(DATA_BINARY_SENSOR_MANAGERS)
@@ -82,6 +85,8 @@ def _cleanup_entry_runtime_data(hass: HomeAssistant, entry: ConfigEntry) -> None
         image_proxy = image_proxies.pop(entry.entry_id, None)
         if image_proxy is not None:
             image_proxy.stop()
+    if image_entity_ids is not None:
+        image_entity_ids.pop(entry.entry_id, None)
     if image_managers is not None:
         image_manager = image_managers.pop(entry.entry_id, None)
         if image_manager is not None:
@@ -100,6 +105,7 @@ def _cleanup_entry_runtime_data(hass: HomeAssistant, entry: ConfigEntry) -> None
         not domain_data.get(DATA_CLIENTS)
         and not domain_data.get(DATA_COORDINATORS)
         and not domain_data.get(DATA_IMAGE_PROXIES)
+        and not domain_data.get(DATA_IMAGE_ENTITY_IDS)
         and not domain_data.get(DATA_IMAGE_MANAGERS)
         and not domain_data.get(DATA_SENSOR_MANAGERS)
         and not domain_data.get(DATA_BINARY_SENSOR_MANAGERS)

@@ -178,6 +178,57 @@ async def test_watch_id_creates_stable_device_and_existing_price_entity(hass):
     await _unload_entry(hass, entry)
 
 
+async def test_price_sensor_associates_registered_image_entity_after_platform_setup(hass):
+    """The primary sensor receives only its HA ImageEntity ID after registration."""
+    watch = _watch(
+        "watch-one",
+        product_image_url="https://images.example.test/canyon-short.jpg",
+    )
+    entry = await _setup_entry(hass, (watch,))
+    entity_registry = er.async_get(hass)
+    price_entity_id = _entity_id(entity_registry, "sensor", "watch_watch-one")
+    image_entity_id = _entity_id(
+        entity_registry, "image", "watch_watch-one_product_image"
+    )
+
+    state = hass.states.get(price_entity_id)
+    assert state is not None
+    assert state.attributes["image_entity_id"] == image_entity_id
+    assert "images.example.test" not in str(state.attributes)
+    assert "token" not in str(state.attributes)
+    await _unload_entry(hass, entry)
+
+
+async def test_new_watch_receives_image_association_after_coordinator_refresh(hass):
+    """Later image registration refreshes an already-created price sensor safely."""
+    first = _watch("watch-one")
+    second = _watch(
+        "watch-two",
+        title="Second Shorts",
+        product_image_url="https://images.example.test/second-short.jpg",
+    )
+    entry = await _setup_entry(hass, (first,))
+    coordinator = hass.data[DOMAIN][DATA_COORDINATORS][entry.entry_id]
+    coordinator.async_set_updated_data(
+        PriceWatchCoordinatorData(
+            summary=_summary(first.id, second.id),
+            watches=(first, second),
+            events=(),
+        )
+    )
+    await hass.async_block_till_done()
+
+    entity_registry = er.async_get(hass)
+    price_entity_id = _entity_id(entity_registry, "sensor", "watch_watch-two")
+    image_entity_id = _entity_id(
+        entity_registry, "image", "watch_watch-two_product_image"
+    )
+    state = hass.states.get(price_entity_id)
+    assert state is not None
+    assert state.attributes["image_entity_id"] == image_entity_id
+    await _unload_entry(hass, entry)
+
+
 async def test_two_watches_create_distinct_devices_and_linked_entities(hass):
     """Every useful per-watch entity belongs to its corresponding device."""
     first = _watch("watch-one")

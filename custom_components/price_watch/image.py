@@ -9,6 +9,7 @@ from homeassistant.components.image import ImageEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.util import dt as dt_util
 
 from .api import (
@@ -23,7 +24,9 @@ from .const import (
     DATA_IMAGE_MANAGERS,
     DATA_IMAGE_PROXIES,
     DATA_COORDINATORS,
+    DATA_IMAGE_ENTITY_IDS,
     DOMAIN,
+    SIGNAL_IMAGE_ENTITY_REGISTERED,
 )
 from .coordinator import PriceWatchCoordinator
 from .image_proxy import PriceWatchImageCache, PriceWatchImageUnavailable
@@ -86,6 +89,37 @@ class PriceWatchWatchImage(PriceWatchWatchEntity, ImageEntity):
     def content_type(self) -> str:
         """Return the media type established by the guarded image fetch."""
         return self._attr_content_type
+
+    async def async_added_to_hass(self) -> None:
+        """Register this HA-managed image with its matching current-price sensor."""
+        await super().async_added_to_hass()
+        image_ids = self.hass.data[DOMAIN][DATA_IMAGE_ENTITY_IDS][
+            self.coordinator.entry_id
+        ]
+        image_ids[self._watch_id] = self.entity_id
+        async_dispatcher_send(
+            self.hass,
+            SIGNAL_IMAGE_ENTITY_REGISTERED,
+            self.coordinator.entry_id,
+            self._watch_id,
+        )
+
+    async def async_will_remove_from_hass(self) -> None:
+        """Clear the association when HA removes or disables this image entity."""
+        image_ids = (
+            self.hass.data.get(DOMAIN, {})
+            .get(DATA_IMAGE_ENTITY_IDS, {})
+            .get(self.coordinator.entry_id, {})
+        )
+        if image_ids.get(self._watch_id) == self.entity_id:
+            image_ids.pop(self._watch_id)
+            async_dispatcher_send(
+                self.hass,
+                SIGNAL_IMAGE_ENTITY_REGISTERED,
+                self.coordinator.entry_id,
+                self._watch_id,
+            )
+        await super().async_will_remove_from_hass()
 
     async def async_image(self) -> bytes | None:
         """Fetch guarded product-image bytes for HA's standard image endpoint."""

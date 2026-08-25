@@ -65,6 +65,11 @@ Home Assistant presents it through its standard image proxy. Browser-visible
 state never contains a retailer/CDN URL, the App's internal add-on hostname, or
 an App image capability token.
 
+The primary current-price sensor exposes the associated Home Assistant image
+entity ID when that entity is registered. Lovelace cards can use this entity
+association without receiving an image URL or token. If Home Assistant has no
+available image entity, the rest of the watch remains usable.
+
 ## Target-event notifications
 
 `sensor.price_watch_latest_target_event` exposes the immutable ID of the most

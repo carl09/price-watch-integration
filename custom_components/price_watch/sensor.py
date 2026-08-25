@@ -6,15 +6,22 @@ from decimal import Decimal
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 from homeassistant.util import slugify
 
 from .api import PriceWatchEvent, PriceWatchWatch
-from .const import DATA_COORDINATORS, DATA_SENSOR_MANAGERS, DOMAIN
+from .const import (
+    DATA_COORDINATORS,
+    DATA_IMAGE_ENTITY_IDS,
+    DATA_SENSOR_MANAGERS,
+    DOMAIN,
+    SIGNAL_IMAGE_ENTITY_REGISTERED,
+)
 from .coordinator import PriceWatchCoordinator
 
 _TRUSTED_FAILURE_ERROR_CODES = frozenset(
@@ -225,6 +232,21 @@ class PriceWatchWatchEntity(CoordinatorEntity[PriceWatchCoordinator]):
         """Keep generated IDs from the original per-watch entity names."""
         self.entity_id = f"{platform}.{slugify(legacy_name)}"
 
+    def _image_entity_id(self) -> str | None:
+        """Return the integration-registered ImageEntity without deriving an ID."""
+        image_ids = (
+            self.hass.data.get(DOMAIN, {})
+            .get(DATA_IMAGE_ENTITY_IDS, {})
+            .get(self.coordinator.entry_id, {})
+        )
+        image_entity_id = image_ids.get(self._watch_id)
+        return (
+            image_entity_id
+            if isinstance(image_entity_id, str)
+            and image_entity_id.startswith("image.")
+            else None
+        )
+
     @property
     def available(self) -> bool:
         """Mark removed watches unavailable without removing their registry entry."""
@@ -284,6 +306,23 @@ class PriceWatchWatchSensor(PriceWatchWatchEntity, SensorEntity):
             return None
         return Decimal(observation.price_cents) / Decimal(100)
 
+    async def async_added_to_hass(self) -> None:
+        """Refresh attributes if the image platform registers after this sensor."""
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                SIGNAL_IMAGE_ENTITY_REGISTERED,
+                self._handle_image_entity_registered,
+            )
+        )
+
+    @callback
+    def _handle_image_entity_registered(self, entry_id: str, watch_id: str) -> None:
+        """Publish the safe entity association for this matching watch only."""
+        if entry_id == self.coordinator.entry_id and watch_id == self._watch_id:
+            self.async_write_ha_state()
+
     @property
     def extra_state_attributes(self) -> dict[str, object] | None:
         """Return safe current facts without requesting additional watch data."""
@@ -310,6 +349,8 @@ class PriceWatchWatchSensor(PriceWatchWatchEntity, SensorEntity):
             attributes["compare_at_price_cents"] = observation.compare_at_price_cents
         if observation is not None and observation.error_code is not None:
             attributes["error_code"] = observation.error_code
+        if image_entity_id := self._image_entity_id():
+            attributes["image_entity_id"] = image_entity_id
         return attributes
 
 

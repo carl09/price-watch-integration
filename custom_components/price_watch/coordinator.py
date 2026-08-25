@@ -60,6 +60,7 @@ class PriceWatchCoordinator(DataUpdateCoordinator[PriceWatchCoordinatorData]):
             config_entry=config_entry,
         )
         self._client = client
+        self.entry_id = config_entry.entry_id
         self.last_successful_refresh_at: datetime | None = None
 
     async def _async_update_data(self) -> PriceWatchCoordinatorData:
