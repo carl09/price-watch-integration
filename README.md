@@ -57,6 +57,14 @@ This preserves Home Assistant history and device registry identity while
 avoiding presentation of an old price as current. No manual migration is
 required; devices are created from the next successful coordinator refresh.
 
+## Product images
+
+Each watch device also has a **Product image** entity when a safe product image
+is available. The integration fetches the service-approved image internally and
+Home Assistant presents it through its standard image proxy. Browser-visible
+state never contains a retailer/CDN URL, the App's internal add-on hostname, or
+an App image capability token.
+
 ## Target-event notifications
 
 `sensor.price_watch_latest_target_event` exposes the immutable ID of the most
