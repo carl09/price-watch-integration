@@ -1,8 +1,10 @@
 {
   "domain": "price_watch",
   "name": "Price Watch",
-  "version": "0.1.2",
-  "codeowners": ["@carl09"],
+  "version": "0.1.3",
+  "codeowners": [
+    "@carl09"
+  ],
   "documentation": "https://github.com/carl09/price-watch-integration",
   "issue_tracker": "https://github.com/carl09/price-watch-integration/issues",
   "integration_type": "service",
