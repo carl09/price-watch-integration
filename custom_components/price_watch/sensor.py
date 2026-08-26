@@ -4,8 +4,13 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from homeassistant.components.sensor import SensorDeviceClass, SensorEntity
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorStateClass,
+)
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -14,10 +19,17 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 from homeassistant.util import slugify
 
-from .api import PriceWatchEvent, PriceWatchWatch
+from .api import (
+    PriceWatchEvent,
+    PriceWatchRetailer,
+    PriceWatchWatch,
+    RETAILER_ACQUISITION_METHODS,
+    RETAILER_STATUSES,
+)
 from .const import (
     DATA_COORDINATORS,
     DATA_IMAGE_ENTITY_IDS,
+    DATA_RETAILER_SENSOR_MANAGERS,
     DATA_SENSOR_MANAGERS,
     DOMAIN,
     SIGNAL_IMAGE_ENTITY_REGISTERED,
@@ -46,12 +58,17 @@ async def async_setup_entry(
     coordinator = hass.data[DOMAIN][DATA_COORDINATORS][entry.entry_id]
     manager = PriceWatchSensorManager(coordinator, async_add_entities)
     hass.data[DOMAIN].setdefault(DATA_SENSOR_MANAGERS, {})[entry.entry_id] = manager
+    retailer_manager = PriceWatchRetailerSensorManager(coordinator, async_add_entities)
+    hass.data[DOMAIN].setdefault(DATA_RETAILER_SENSOR_MANAGERS, {})[
+        entry.entry_id
+    ] = retailer_manager
     async_add_entities(
         [
             PriceWatchSummarySensor(coordinator, entry),
             PriceWatchLatestTargetEventSensor(coordinator, entry),
             PriceWatchLatestFailureEventSensor(coordinator, entry),
             *manager.add_new_watch_sensors(),
+            *retailer_manager.add_new_retailer_sensors(),
         ]
     )
 
@@ -461,6 +478,276 @@ class PriceWatchSensorManager:
     def _handle_coordinator_update(self) -> None:
         """Register entities introduced by a later shared coordinator snapshot."""
         sensors = self.add_new_watch_sensors()
+        if sensors:
+            self._async_add_entities(sensors)
+
+    def stop(self) -> None:
+        """Unregister the coordinator callback during config-entry unload."""
+        self._unsub()
+
+
+def retailer_display_name(retailer_id: str) -> str:
+    """Format a stable retailer ID for device presentation only.
+
+    This only reformats the retailer ID Price Watch already returns
+    (underscores to spaces, title case); it never fabricates or fetches a
+    retailer display name from anywhere else.
+    """
+    return retailer_id.replace("_", " ").replace("-", " ").title()
+
+
+class PriceWatchRetailerEntity(CoordinatorEntity[PriceWatchCoordinator]):
+    """Share stable per-retailer device identity across retailer entities."""
+
+    _attr_has_entity_name = True
+
+    def __init__(
+        self, coordinator: PriceWatchCoordinator, retailer_id: str
+    ) -> None:
+        """Capture the immutable retailer ID used for device/entity identity."""
+        super().__init__(coordinator)
+        self._retailer_id = retailer_id
+
+    def _retailer(self) -> PriceWatchRetailer | None:
+        """Return this retailer from the latest shared coordinator snapshot."""
+        if self.coordinator.data is None:
+            return None
+        return next(
+            (
+                retailer
+                for retailer in self.coordinator.data.retailers
+                if retailer.retailer_id == self._retailer_id
+            ),
+            None,
+        )
+
+    @property
+    def available(self) -> bool:
+        """A coordinator/API error must never present a retailer as healthy."""
+        return super().available and self._retailer() is not None
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Group retailer entities by the stable, deterministic retailer ID."""
+        return DeviceInfo(
+            identifiers={(DOMAIN, f"retailer_{self._retailer_id}")},
+            name=retailer_display_name(self._retailer_id),
+            manufacturer="Price Watch",
+        )
+
+
+class PriceWatchRetailerStatusSensor(PriceWatchRetailerEntity, SensorEntity):
+    """Expose only the service-derived retailer status; never recomputed."""
+
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = list(RETAILER_STATUSES)
+
+    def __init__(
+        self, coordinator: PriceWatchCoordinator, retailer_id: str
+    ) -> None:
+        """Set a stable retailer status entity identity."""
+        super().__init__(coordinator, retailer_id)
+        self._attr_unique_id = f"retailer_{retailer_id}_status"
+        self._attr_name = "Status"
+
+    @property
+    def native_value(self) -> str | None:
+        """Return the bounded status the service reported for this retailer."""
+        retailer = self._retailer()
+        return retailer.status if retailer is not None else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object] | None:
+        """Return only safe, bounded service-supplied status facts."""
+        retailer = self._retailer()
+        if retailer is None:
+            return None
+        attributes: dict[str, object] = {"enabled": retailer.enabled}
+        if retailer.cooldown_until is not None:
+            attributes["cooldown_until"] = retailer.cooldown_until
+        return attributes
+
+
+class PriceWatchRetailerActiveStrategySensor(PriceWatchRetailerEntity, SensorEntity):
+    """Expose the acquisition strategy used for the latest completed check."""
+
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = list(RETAILER_ACQUISITION_METHODS)
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(
+        self, coordinator: PriceWatchCoordinator, retailer_id: str
+    ) -> None:
+        """Set a stable active-strategy entity identity."""
+        super().__init__(coordinator, retailer_id)
+        self._attr_unique_id = f"retailer_{retailer_id}_active_strategy"
+        self._attr_name = "Active strategy"
+
+    @property
+    def native_value(self) -> str | None:
+        """Return the strategy the service actually used, not a preference."""
+        retailer = self._retailer()
+        return retailer.active_strategy if retailer is not None else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object] | None:
+        """Return only the bounded reason the service selected this strategy."""
+        retailer = self._retailer()
+        if retailer is None:
+            return None
+        return {"effective_strategy_reason": retailer.effective_strategy_reason}
+
+
+class PriceWatchRetailerLastSuccessSensor(PriceWatchRetailerEntity, SensorEntity):
+    """Expose only the service-reported last successful acquisition attempt."""
+
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(
+        self, coordinator: PriceWatchCoordinator, retailer_id: str
+    ) -> None:
+        """Set a stable last-success entity identity."""
+        super().__init__(coordinator, retailer_id)
+        self._attr_unique_id = f"retailer_{retailer_id}_last_success"
+        self._attr_name = "Last success"
+
+    @property
+    def native_value(self):
+        """Return the last successful attempt time reported by the service."""
+        retailer = self._retailer()
+        attempt = retailer.last_success if retailer is not None else None
+        if attempt is None:
+            return None
+        return dt_util.parse_datetime(attempt.occurred_at)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object] | None:
+        """Return only the bounded acquisition method for the last success."""
+        retailer = self._retailer()
+        attempt = retailer.last_success if retailer is not None else None
+        if attempt is None:
+            return None
+        return {"acquisition_method": attempt.acquisition_method}
+
+
+class PriceWatchRetailerLastFailureSensor(PriceWatchRetailerEntity, SensorEntity):
+    """Expose only the service-reported last failed acquisition attempt."""
+
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(
+        self, coordinator: PriceWatchCoordinator, retailer_id: str
+    ) -> None:
+        """Set a stable last-failure entity identity."""
+        super().__init__(coordinator, retailer_id)
+        self._attr_unique_id = f"retailer_{retailer_id}_last_failure"
+        self._attr_name = "Last failure"
+
+    @property
+    def native_value(self):
+        """Return the last failed attempt time reported by the service."""
+        retailer = self._retailer()
+        attempt = retailer.last_failure if retailer is not None else None
+        if attempt is None:
+            return None
+        return dt_util.parse_datetime(attempt.occurred_at)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object] | None:
+        """Return only the bounded classification for the last failure."""
+        retailer = self._retailer()
+        attempt = retailer.last_failure if retailer is not None else None
+        if attempt is None:
+            return None
+        attributes: dict[str, object] = {
+            "acquisition_method": attempt.acquisition_method
+        }
+        if attempt.failure_classification is not None:
+            attributes["failure_classification"] = attempt.failure_classification
+        return attributes
+
+
+class PriceWatchRetailerWatchImpactSensor(PriceWatchRetailerEntity, SensorEntity):
+    """Expose only the service-reported watch impact counts for a retailer."""
+
+    _attr_native_unit_of_measurement = "watches"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(
+        self, coordinator: PriceWatchCoordinator, retailer_id: str
+    ) -> None:
+        """Set a stable watch-impact entity identity."""
+        super().__init__(coordinator, retailer_id)
+        self._attr_unique_id = f"retailer_{retailer_id}_watch_impact"
+        self._attr_name = "Watch impact"
+
+    @property
+    def native_value(self) -> int | None:
+        """Return the active enabled-watch count for this retailer."""
+        retailer = self._retailer()
+        return retailer.watch_impact.active_watch_count if retailer is not None else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object] | None:
+        """Return only the bounded affected-watch count reported by the service."""
+        retailer = self._retailer()
+        if retailer is None:
+            return None
+        return {"affected_watch_count": retailer.watch_impact.affected_watch_count}
+
+
+class PriceWatchRetailerSensorManager:
+    """Create retailer sensors for each retailer discovered by the coordinator."""
+
+    def __init__(
+        self,
+        coordinator: PriceWatchCoordinator,
+        async_add_entities: AddEntitiesCallback,
+    ) -> None:
+        """Subscribe once to shared coordinator updates."""
+        self._coordinator = coordinator
+        self._async_add_entities = async_add_entities
+        self._retailer_ids: set[str] = set()
+        self._unsub = coordinator.async_add_listener(
+            self._handle_coordinator_update
+        )
+
+    def add_new_retailer_sensors(self) -> list[SensorEntity]:
+        """Return sensors for retailers not previously seen by this entry."""
+        if self._coordinator.data is None:
+            return []
+        new_ids = [
+            retailer.retailer_id
+            for retailer in self._coordinator.data.retailers
+            if retailer.retailer_id not in self._retailer_ids
+        ]
+        self._retailer_ids.update(new_ids)
+        entities: list[SensorEntity] = []
+        for retailer_id in new_ids:
+            entities.extend(
+                [
+                    PriceWatchRetailerStatusSensor(self._coordinator, retailer_id),
+                    PriceWatchRetailerActiveStrategySensor(
+                        self._coordinator, retailer_id
+                    ),
+                    PriceWatchRetailerLastSuccessSensor(
+                        self._coordinator, retailer_id
+                    ),
+                    PriceWatchRetailerLastFailureSensor(
+                        self._coordinator, retailer_id
+                    ),
+                    PriceWatchRetailerWatchImpactSensor(
+                        self._coordinator, retailer_id
+                    ),
+                ]
+            )
+        return entities
+
+    def _handle_coordinator_update(self) -> None:
+        """Register entities introduced by a later shared coordinator snapshot."""
+        sensors = self.add_new_retailer_sensors()
         if sensors:
             self._async_add_entities(sensors)
 

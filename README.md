@@ -34,6 +34,7 @@ The token is stored in the Home Assistant config entry. It is not placed in YAML
 - Summary, target-status, and dynamic watch devices/entities
 - Latest immutable target-event entity for notification automations
 - Refresh and enable/disable watch actions
+- Stable per-retailer devices and entities for operational status, strategy control, and diagnostics
 - Shopping List support when that Home Assistant capability is available
 
 The integration only calls the configured Price Watch API. It does not scrape retailer sites, access the service database, or expose the service token to a dashboard card.
@@ -142,6 +143,38 @@ actions:
               title: Price Watch monitoring recovered
               message: Price Watch monitor health recovered.
 ```
+
+## Retailer devices and entities
+
+Each registered retailer is represented by exactly one stable Home Assistant
+Device, identified permanently by its service `retailer_id`. This device is
+sourced only from the authenticated Price Watch `/v1/retailers` route; Home
+Assistant never re-derives, recomputes, or infers retailer health locally.
+
+Each retailer device groups:
+
+- **Status** — the service's bounded operational status: `healthy`,
+  `degraded`, `rate_limited`, `blocked`, `disabled`, or `unknown`.
+- **Active strategy** — the acquisition strategy actually used for the
+  latest completed check, with the service's bounded reason as an attribute.
+- **Preferred strategy** — a select entity limited to `auto` plus only the
+  acquisition strategies this retailer's adapter supports; the service still
+  independently rejects an unsupported choice.
+- **Enabled** — a switch reflecting the retailer's durable enabled state.
+- **Last success** / **Last failure** — timestamp sensors for the most
+  recent successful/failed acquisition attempt, with the bounded acquisition
+  method (and failure classification, when reported) as attributes.
+- **Watch impact** — the number of enabled watches currently assigned to
+  this retailer, with the affected-watch count as an attribute.
+- **Test retailer** / **Reset acquisition state** — buttons that call only
+  the service's diagnostic-test and cooldown/escalation-reset actions.
+
+A coordinator or API error makes every retailer entity unavailable; it can
+never continue presenting a stale status as healthy. Controls call only the
+authenticated Price Watch API and never trigger a watch check, observation,
+event, or notification as a side effect. No entity exposes a retailer URL,
+API token, cookie, raw capture, selector, or acquisition history — only the
+bounded operational facts the service itself reports.
 
 ## Schedule checks in Home Assistant
 

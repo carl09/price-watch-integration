@@ -21,6 +21,7 @@ from .api import (
     PriceWatchAuthenticationError,
     PriceWatchEvent,
     PriceWatchInvalidResponseError,
+    PriceWatchRetailer,
     PriceWatchSummary,
     PriceWatchTimeoutError,
     PriceWatchTransportError,
@@ -40,6 +41,7 @@ class PriceWatchCoordinatorData:
     summary: PriceWatchSummary
     watches: tuple[PriceWatchWatch, ...]
     events: tuple[PriceWatchEvent, ...]
+    retailers: tuple[PriceWatchRetailer, ...] = ()
 
 
 class PriceWatchCoordinator(DataUpdateCoordinator[PriceWatchCoordinatorData]):
@@ -88,6 +90,13 @@ class PriceWatchCoordinator(DataUpdateCoordinator[PriceWatchCoordinatorData]):
                     request_id=request_id
                 ),
             )
+            retailers = await self._async_fetch(
+                operation,
+                "/v1/retailers",
+                lambda request_id: self._client.async_get_retailers(
+                    request_id=request_id
+                ),
+            )
         except PriceWatchAuthenticationError as err:
             raise ConfigEntryAuthFailed from err
         except (
@@ -101,6 +110,7 @@ class PriceWatchCoordinator(DataUpdateCoordinator[PriceWatchCoordinatorData]):
             summary=summary,
             watches=watches,
             events=events,
+            retailers=retailers,
         )
         self.last_successful_refresh_at = dt_util.utcnow()
         return data

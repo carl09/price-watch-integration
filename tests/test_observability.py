@@ -187,6 +187,7 @@ async def test_coordinator_logs_each_route_with_its_request_id(hass, caplog):
     client.async_get_summary.return_value = PriceWatchSummary(0, 0, 0, 0, None)
     client.async_get_watches.return_value = ()
     client.async_get_events.return_value = ()
+    client.async_get_retailers.return_value = ()
     coordinator = PriceWatchCoordinator(
         hass,
         MockConfigEntry(domain=DOMAIN),
@@ -200,6 +201,7 @@ async def test_coordinator_logs_each_route_with_its_request_id(hass, caplog):
         ("/v1/summary", client.async_get_summary),
         ("/v1/watches", client.async_get_watches),
         ("/v1/events", client.async_get_events),
+        ("/v1/retailers", client.async_get_retailers),
     )
     request_ids = [
         method.await_args.kwargs["request_id"] for _, method in requests

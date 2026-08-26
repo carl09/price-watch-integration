@@ -146,6 +146,9 @@ async def _setup_entry(hass, watches: tuple[PriceWatchWatch, ...]):
     ), patch(
         "custom_components.price_watch.api.PriceWatchApiClient.async_get_events",
         new=AsyncMock(return_value=()),
+    ), patch(
+        "custom_components.price_watch.api.PriceWatchApiClient.async_get_retailers",
+        new=AsyncMock(return_value=()),
     ):
         assert await hass.config_entries.async_setup(config_entry.entry_id)
         await hass.async_block_till_done()

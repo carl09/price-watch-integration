@@ -18,9 +18,46 @@ from .const import (
     HEALTH_PATH,
     REQUEST_ID_HEADER,
     REQUEST_TIMEOUT_SECONDS,
+    RETAILERS_PATH,
     SUMMARY_PATH,
     WATCHES_PATH,
 )
+
+#: F10 Phase 7a — the bounded set of acquisition methods the service may
+#: report. Mirrors the private service's `RetailerStrategyMethod` enum.
+RETAILER_ACQUISITION_METHODS: tuple[str, ...] = (
+    "http",
+    "browser",
+    "network_capture",
+    "custom",
+)
+#: The operator-selectable preferred strategy is `auto` plus any acquisition
+#: method; the service still rejects a method unsupported by a given
+#: retailer.
+RETAILER_PREFERRED_STRATEGIES: tuple[str, ...] = (
+    "auto",
+    *RETAILER_ACQUISITION_METHODS,
+)
+#: Bounded derived retailer health/status values. `contract_broken` is out of
+#: Phase 6a/7a scope and is intentionally not included.
+RETAILER_STATUSES: tuple[str, ...] = (
+    "healthy",
+    "degraded",
+    "rate_limited",
+    "blocked",
+    "disabled",
+    "unknown",
+)
+_RETAILER_INTERPRETATION_MODES = frozenset({"legacy_adapter", "contract", "custom"})
+_RETAILER_EFFECTIVE_STRATEGY_REASONS = frozenset(
+    {"auto_lowest_cost", "manual_preference", "temporary_escalation"}
+)
+_RETAILER_DIAGNOSTIC_OUTCOMES = frozenset(
+    {"success", "check_failed", "cooldown", "halted", "disabled"}
+)
+_RETAILER_ACQUISITION_METHODS = frozenset(RETAILER_ACQUISITION_METHODS)
+_RETAILER_PREFERRED_STRATEGIES = frozenset(RETAILER_PREFERRED_STRATEGIES)
+_RETAILER_STATUSES = frozenset(RETAILER_STATUSES)
 
 
 class PriceWatchApiError(Exception):
@@ -148,6 +185,76 @@ class PriceWatchEnabledResult:
 
 
 @dataclass(frozen=True)
+class PriceWatchRetailerAttempt:
+    """A single bounded retailer acquisition attempt. Never raw capture."""
+
+    acquisition_method: str
+    occurred_at: str
+    failure_classification: str | None = None
+
+
+@dataclass(frozen=True)
+class PriceWatchRetailerMetric:
+    """Bounded per-acquisition-method retailer strategy metrics."""
+
+    acquisition_method: str
+    attempts: int
+    successes: int
+    success_rate_percent: float
+    median_acquisition_duration_ms: float
+    blocked_count: int
+    blocked_rate_percent: float
+    rate_limited_count: int
+    rate_limited_rate_percent: float
+    last_success_at: str | None
+    failure_counts: dict[str, int]
+
+
+@dataclass(frozen=True)
+class PriceWatchRetailerWatchImpact:
+    """Bounded active/affected watch counts for one retailer."""
+
+    active_watch_count: int
+    affected_watch_count: int
+
+
+@dataclass(frozen=True)
+class PriceWatchRetailer:
+    """F10 Phase 7a bounded retailer operational summary.
+
+    Never includes raw capture, HTML, selectors, cookies, credentials,
+    tokens or an arbitrary retailer URL; the service itself excludes these
+    from the Phase 6a API response.
+    """
+
+    retailer_id: str
+    enabled: bool
+    acquisition_methods: tuple[str, ...]
+    interpretation_mode: str
+    status: str
+    preferred_strategy: str
+    active_strategy: str
+    effective_strategy_reason: str
+    watch_impact: PriceWatchRetailerWatchImpact
+    metrics: tuple[PriceWatchRetailerMetric, ...] = ()
+    cooldown_until: str | None = None
+    last_success: PriceWatchRetailerAttempt | None = None
+    last_failure: PriceWatchRetailerAttempt | None = None
+
+
+@dataclass(frozen=True)
+class PriceWatchRetailerDiagnosticResult:
+    """A bounded diagnostic test outcome. Never price/product data."""
+
+    retailer_id: str
+    watch_id: str
+    outcome: str
+    tested_at: str
+    acquisition_method: str | None = None
+    classification: str | None = None
+
+
+@dataclass(frozen=True)
 class PriceWatchProductImage:
     """Validated product-image bytes fetched from the Price Watch service."""
 
@@ -164,6 +271,7 @@ _TRUSTED_SERVICE_CODES = frozenset(
         "unauthorized",
         "unsupported_product_host",
         "unsupported_retailer",
+        "unsupported_strategy",
         "validation_error",
     }
 )
@@ -381,6 +489,96 @@ class PriceWatchApiClient:
             raise PriceWatchInvalidResponseError
         return PriceWatchEnabledResult(id=payload["id"], enabled=payload["enabled"])
 
+    async def async_get_retailers(
+        self, *, request_id: str | None = None
+    ) -> tuple[PriceWatchRetailer, ...]:
+        """Return validated F10 Phase 7a bounded retailer summaries."""
+        payload = await self._async_get_json(RETAILERS_PATH, request_id=request_id)
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+            raise PriceWatchInvalidResponseError
+        return tuple(self._parse_retailer(item) for item in payload["data"])
+
+    async def async_set_retailer_enabled(
+        self, retailer_id: str, enabled: bool, *, request_id: str | None = None
+    ) -> PriceWatchRetailer:
+        """Enable/disable one retailer with a new idempotency key."""
+        if not isinstance(retailer_id, str) or not retailer_id:
+            raise ValueError("retailer ID is required")
+        if not isinstance(enabled, bool):
+            raise ValueError("enabled must be a boolean")
+        payload = await self._async_patch_json(
+            f"{RETAILERS_PATH}/{quote(retailer_id, safe='')}",
+            str(uuid4()),
+            {"enabled": enabled},
+            request_id=request_id,
+        )
+        return self._parse_retailer(payload)
+
+    async def async_set_retailer_preferred_strategy(
+        self,
+        retailer_id: str,
+        preferred_strategy: str,
+        *,
+        request_id: str | None = None,
+    ) -> PriceWatchRetailer:
+        """Set the operator's preferred strategy with a new idempotency key.
+
+        Only sends a value this client recognises; the service independently
+        rejects a strategy unsupported by this particular retailer.
+        """
+        if not isinstance(retailer_id, str) or not retailer_id:
+            raise ValueError("retailer ID is required")
+        if preferred_strategy not in _RETAILER_PREFERRED_STRATEGIES:
+            raise ValueError("preferred strategy is not recognised")
+        payload = await self._async_patch_json(
+            f"{RETAILERS_PATH}/{quote(retailer_id, safe='')}",
+            str(uuid4()),
+            {"preferred_strategy": preferred_strategy},
+            request_id=request_id,
+        )
+        return self._parse_retailer(payload)
+
+    async def async_reset_retailer(
+        self, retailer_id: str, *, request_id: str | None = None
+    ) -> PriceWatchRetailer:
+        """Clear only durable cooldown/escalation state for one retailer.
+
+        This never creates a watch observation, event or notification; the
+        service enforces that boundary independently of this client.
+        """
+        if not isinstance(retailer_id, str) or not retailer_id:
+            raise ValueError("retailer ID is required")
+        payload = await self._async_post_json(
+            f"{RETAILERS_PATH}/{quote(retailer_id, safe='')}/reset",
+            str(uuid4()),
+            request_id=request_id,
+        )
+        return self._parse_retailer(payload)
+
+    async def async_test_retailer(
+        self,
+        retailer_id: str,
+        watch_id: str | None = None,
+        *,
+        request_id: str | None = None,
+    ) -> PriceWatchRetailerDiagnosticResult:
+        """Run a controlled diagnostic test for one retailer.
+
+        This never persists a watch observation or event; the service
+        enforces that boundary independently of this client.
+        """
+        if not isinstance(retailer_id, str) or not retailer_id:
+            raise ValueError("retailer ID is required")
+        if watch_id is not None and (not isinstance(watch_id, str) or not watch_id):
+            raise ValueError("watch ID must be a non-empty string")
+        payload = await self._async_post_json(
+            f"{RETAILERS_PATH}/{quote(retailer_id, safe='')}/test",
+            str(uuid4()),
+            {"watch_id": watch_id} if watch_id else None,
+            request_id=request_id,
+        )
+        return self._parse_retailer_diagnostic_result(payload)
+
     async def _async_get_json(
         self, path: str, *, request_id: str | None = None
     ) -> object:
@@ -391,6 +589,7 @@ class PriceWatchApiClient:
         self,
         path: str,
         idempotency_key: str,
+        payload: dict[str, object] | None = None,
         *,
         request_id: str | None = None,
     ) -> object:
@@ -405,7 +604,7 @@ class PriceWatchApiClient:
                         "Idempotency-Key": idempotency_key,
                         REQUEST_ID_HEADER: request_id,
                     },
-                    json={},
+                    json=payload if payload is not None else {},
                 ) as response:
                     if response.status in {401, 403}:
                         raise PriceWatchAuthenticationError(response.status)
@@ -782,4 +981,199 @@ class PriceWatchApiClient:
             watch_id=value["watch_id"],
             checked_at=value["checked_at"],
             status=value["status"],
+        )
+
+    @staticmethod
+    def _parse_retailer_attempt(value: object) -> PriceWatchRetailerAttempt | None:
+        """Parse one bounded attempt summary; absent means never attempted."""
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise PriceWatchInvalidResponseError
+        acquisition_method = value.get("acquisition_method")
+        if acquisition_method not in _RETAILER_ACQUISITION_METHODS:
+            raise PriceWatchInvalidResponseError
+        occurred_at = value.get("occurred_at")
+        if not isinstance(occurred_at, str) or not occurred_at:
+            raise PriceWatchInvalidResponseError
+        failure_classification = value.get("failure_classification")
+        if failure_classification is not None and (
+            not isinstance(failure_classification, str) or not failure_classification
+        ):
+            raise PriceWatchInvalidResponseError
+        return PriceWatchRetailerAttempt(
+            acquisition_method=acquisition_method,
+            occurred_at=occurred_at,
+            failure_classification=failure_classification,
+        )
+
+    @staticmethod
+    def _parse_retailer_metric(value: object) -> PriceWatchRetailerMetric:
+        """Parse one bounded per-method retailer strategy metric."""
+        if not isinstance(value, dict):
+            raise PriceWatchInvalidResponseError
+        acquisition_method = value.get("acquisition_method")
+        if acquisition_method not in _RETAILER_ACQUISITION_METHODS:
+            raise PriceWatchInvalidResponseError
+        int_fields = ("attempts", "successes", "blocked_count", "rate_limited_count")
+        if any(
+            not isinstance(value.get(key), int)
+            or isinstance(value.get(key), bool)
+            or value[key] < 0
+            for key in int_fields
+        ):
+            raise PriceWatchInvalidResponseError
+        float_fields = (
+            "success_rate_percent",
+            "median_acquisition_duration_ms",
+            "blocked_rate_percent",
+            "rate_limited_rate_percent",
+        )
+        if any(
+            not isinstance(value.get(key), (int, float))
+            or isinstance(value.get(key), bool)
+            or value[key] < 0
+            for key in float_fields
+        ):
+            raise PriceWatchInvalidResponseError
+        last_success_at = value.get("last_success_at")
+        if last_success_at is not None and (
+            not isinstance(last_success_at, str) or not last_success_at
+        ):
+            raise PriceWatchInvalidResponseError
+        failure_counts = value.get("failure_counts")
+        if not isinstance(failure_counts, dict) or not all(
+            isinstance(key, str)
+            and isinstance(count, int)
+            and not isinstance(count, bool)
+            and count >= 0
+            for key, count in failure_counts.items()
+        ):
+            raise PriceWatchInvalidResponseError
+        return PriceWatchRetailerMetric(
+            acquisition_method=acquisition_method,
+            attempts=value["attempts"],
+            successes=value["successes"],
+            success_rate_percent=value["success_rate_percent"],
+            median_acquisition_duration_ms=value["median_acquisition_duration_ms"],
+            blocked_count=value["blocked_count"],
+            blocked_rate_percent=value["blocked_rate_percent"],
+            rate_limited_count=value["rate_limited_count"],
+            rate_limited_rate_percent=value["rate_limited_rate_percent"],
+            last_success_at=last_success_at,
+            failure_counts=dict(failure_counts),
+        )
+
+    @staticmethod
+    def _parse_retailer_watch_impact(value: object) -> PriceWatchRetailerWatchImpact:
+        """Parse the bounded active/affected watch-impact counts."""
+        if not isinstance(value, dict):
+            raise PriceWatchInvalidResponseError
+        counts = ("active_watch_count", "affected_watch_count")
+        if any(
+            not isinstance(value.get(key), int)
+            or isinstance(value.get(key), bool)
+            or value[key] < 0
+            for key in counts
+        ):
+            raise PriceWatchInvalidResponseError
+        return PriceWatchRetailerWatchImpact(
+            active_watch_count=value["active_watch_count"],
+            affected_watch_count=value["affected_watch_count"],
+        )
+
+    def _parse_retailer(self, value: object) -> PriceWatchRetailer:
+        """Parse one F10 Phase 6a bounded retailer operational summary."""
+        if not isinstance(value, dict):
+            raise PriceWatchInvalidResponseError
+        retailer_id = value.get("retailer_id")
+        if not isinstance(retailer_id, str) or not retailer_id:
+            raise PriceWatchInvalidResponseError
+        if not isinstance(value.get("enabled"), bool):
+            raise PriceWatchInvalidResponseError
+        acquisition_methods = value.get("acquisition_methods")
+        if (
+            not isinstance(acquisition_methods, list)
+            or not acquisition_methods
+            or not all(
+                isinstance(method, str) and method in _RETAILER_ACQUISITION_METHODS
+                for method in acquisition_methods
+            )
+        ):
+            raise PriceWatchInvalidResponseError
+        interpretation_mode = value.get("interpretation_mode")
+        if interpretation_mode not in _RETAILER_INTERPRETATION_MODES:
+            raise PriceWatchInvalidResponseError
+        status = value.get("status")
+        if status not in _RETAILER_STATUSES:
+            raise PriceWatchInvalidResponseError
+        preferred_strategy = value.get("preferred_strategy")
+        if preferred_strategy not in _RETAILER_PREFERRED_STRATEGIES:
+            raise PriceWatchInvalidResponseError
+        active_strategy = value.get("active_strategy")
+        if active_strategy not in _RETAILER_ACQUISITION_METHODS:
+            raise PriceWatchInvalidResponseError
+        effective_strategy_reason = value.get("effective_strategy_reason")
+        if effective_strategy_reason not in _RETAILER_EFFECTIVE_STRATEGY_REASONS:
+            raise PriceWatchInvalidResponseError
+        cooldown_until = value.get("cooldown_until")
+        if cooldown_until is not None and (
+            not isinstance(cooldown_until, str) or not cooldown_until
+        ):
+            raise PriceWatchInvalidResponseError
+        metrics = value.get("metrics")
+        if not isinstance(metrics, list):
+            raise PriceWatchInvalidResponseError
+        return PriceWatchRetailer(
+            retailer_id=retailer_id,
+            enabled=value["enabled"],
+            acquisition_methods=tuple(acquisition_methods),
+            interpretation_mode=interpretation_mode,
+            status=status,
+            preferred_strategy=preferred_strategy,
+            active_strategy=active_strategy,
+            effective_strategy_reason=effective_strategy_reason,
+            watch_impact=self._parse_retailer_watch_impact(value.get("watch_impact")),
+            metrics=tuple(
+                self._parse_retailer_metric(item) for item in metrics
+            ),
+            cooldown_until=cooldown_until,
+            last_success=self._parse_retailer_attempt(value.get("last_success")),
+            last_failure=self._parse_retailer_attempt(value.get("last_failure")),
+        )
+
+    @staticmethod
+    def _parse_retailer_diagnostic_result(
+        value: object,
+    ) -> PriceWatchRetailerDiagnosticResult:
+        """Parse a bounded diagnostic outcome; never price/product data."""
+        if not isinstance(value, dict):
+            raise PriceWatchInvalidResponseError
+        required_strings = ("retailer_id", "watch_id", "tested_at")
+        if any(
+            not isinstance(value.get(key), str) or not value[key]
+            for key in required_strings
+        ):
+            raise PriceWatchInvalidResponseError
+        outcome = value.get("outcome")
+        if outcome not in _RETAILER_DIAGNOSTIC_OUTCOMES:
+            raise PriceWatchInvalidResponseError
+        acquisition_method = value.get("acquisition_method")
+        if (
+            acquisition_method is not None
+            and acquisition_method not in _RETAILER_ACQUISITION_METHODS
+        ):
+            raise PriceWatchInvalidResponseError
+        classification = value.get("classification")
+        if classification is not None and (
+            not isinstance(classification, str) or not classification
+        ):
+            raise PriceWatchInvalidResponseError
+        return PriceWatchRetailerDiagnosticResult(
+            retailer_id=value["retailer_id"],
+            watch_id=value["watch_id"],
+            outcome=outcome,
+            tested_at=value["tested_at"],
+            acquisition_method=acquisition_method,
+            classification=classification,
         )

@@ -17,12 +17,20 @@ from .const import (
     DATA_IMAGE_ENTITY_IDS,
     DATA_IMAGE_MANAGERS,
     DATA_IMAGE_PROXIES,
+    DATA_RETAILER_BUTTON_MANAGERS,
+    DATA_RETAILER_SELECT_MANAGERS,
+    DATA_RETAILER_SENSOR_MANAGERS,
+    DATA_RETAILER_SWITCH_MANAGERS,
     DATA_SENSOR_MANAGERS,
     DOMAIN,
 )
 from .coordinator import PriceWatchCoordinator
 from .image_proxy import PriceWatchImageCache
 from .services import async_register_services, async_unregister_services
+
+#: F10 Phase 7a adds retailer select/switch/button platforms alongside the
+#: existing watch/summary sensor, binary_sensor and image platforms.
+_PLATFORMS = ["sensor", "binary_sensor", "image", "select", "switch", "button"]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -48,18 +56,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         PriceWatchImageCache(coordinator, client)
     )
     runtime_data.setdefault(DATA_IMAGE_ENTITY_IDS, {})[entry.entry_id] = {}
-    await hass.config_entries.async_forward_entry_setups(
-        entry, ["sensor", "binary_sensor", "image"]
-    )
+    await hass.config_entries.async_forward_entry_setups(entry, _PLATFORMS)
     async_register_services(hass)
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Remove Price Watch runtime data for an unloaded config entry."""
-    if not await hass.config_entries.async_unload_platforms(
-        entry, ["sensor", "binary_sensor", "image"]
-    ):
+    if not await hass.config_entries.async_unload_platforms(entry, _PLATFORMS):
         return False
     _cleanup_entry_runtime_data(hass, entry)
     return True
@@ -77,6 +81,10 @@ def _cleanup_entry_runtime_data(hass: HomeAssistant, entry: ConfigEntry) -> None
     image_managers = domain_data.get(DATA_IMAGE_MANAGERS)
     sensor_managers = domain_data.get(DATA_SENSOR_MANAGERS)
     binary_sensor_managers = domain_data.get(DATA_BINARY_SENSOR_MANAGERS)
+    retailer_sensor_managers = domain_data.get(DATA_RETAILER_SENSOR_MANAGERS)
+    retailer_select_managers = domain_data.get(DATA_RETAILER_SELECT_MANAGERS)
+    retailer_switch_managers = domain_data.get(DATA_RETAILER_SWITCH_MANAGERS)
+    retailer_button_managers = domain_data.get(DATA_RETAILER_BUTTON_MANAGERS)
     if clients is not None:
         clients.pop(entry.entry_id, None)
     if coordinators is not None:
@@ -99,6 +107,16 @@ def _cleanup_entry_runtime_data(hass: HomeAssistant, entry: ConfigEntry) -> None
         manager = binary_sensor_managers.pop(entry.entry_id, None)
         if manager is not None:
             manager.stop()
+    for retailer_managers in (
+        retailer_sensor_managers,
+        retailer_select_managers,
+        retailer_switch_managers,
+        retailer_button_managers,
+    ):
+        if retailer_managers is not None:
+            manager = retailer_managers.pop(entry.entry_id, None)
+            if manager is not None:
+                manager.stop()
     if not domain_data.get(DATA_CLIENTS):
         async_unregister_services(hass)
     if (
@@ -109,5 +127,9 @@ def _cleanup_entry_runtime_data(hass: HomeAssistant, entry: ConfigEntry) -> None
         and not domain_data.get(DATA_IMAGE_MANAGERS)
         and not domain_data.get(DATA_SENSOR_MANAGERS)
         and not domain_data.get(DATA_BINARY_SENSOR_MANAGERS)
+        and not domain_data.get(DATA_RETAILER_SENSOR_MANAGERS)
+        and not domain_data.get(DATA_RETAILER_SELECT_MANAGERS)
+        and not domain_data.get(DATA_RETAILER_SWITCH_MANAGERS)
+        and not domain_data.get(DATA_RETAILER_BUTTON_MANAGERS)
     ):
         hass.data.pop(DOMAIN)

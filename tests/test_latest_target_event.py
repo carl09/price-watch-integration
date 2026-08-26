@@ -73,6 +73,9 @@ async def setup_entry(hass, events: tuple[PriceWatchEvent, ...]):
     ), patch(
         "custom_components.price_watch.api.PriceWatchApiClient.async_get_events",
         new=AsyncMock(return_value=events),
+    ), patch(
+        "custom_components.price_watch.api.PriceWatchApiClient.async_get_retailers",
+        new=AsyncMock(return_value=()),
     ):
         assert await hass.config_entries.async_setup(config_entry.entry_id)
         await hass.async_block_till_done()
@@ -178,6 +181,9 @@ async def test_unchanged_target_event_id_does_not_update_state(hass):
     ), patch(
         "custom_components.price_watch.api.PriceWatchApiClient.async_get_events",
         new=AsyncMock(return_value=events),
+    ), patch(
+        "custom_components.price_watch.api.PriceWatchApiClient.async_get_retailers",
+        new=AsyncMock(return_value=()),
     ):
         await coordinator.async_request_refresh()
         await hass.async_block_till_done()
