@@ -1,7 +1,7 @@
 {
   "domain": "price_watch",
   "name": "Price Watch",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "codeowners": [
     "@carl09"
   ],
