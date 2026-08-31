@@ -3,7 +3,7 @@
 A Home Assistant custom integration for a self-hosted **Price Watch** service. It exposes the service's watch state in Home Assistant and provides actions for refreshing and managing watches.
 
 > [!WARNING]
-> This is an early release. Run a Price Watch service on your own private network before adding this integration.
+> This is an early release. Run a Price Watch service on a trusted network before adding this integration.
 
 ## Public package, private runtime
 
@@ -14,8 +14,15 @@ private deployment configuration, your watch data, or API tokens.
 
 The integration connects from Home Assistant to a Price Watch API URL that you
 configure. Keep that API on your trusted network; installing this public HACS
-package does not publish your service or watchlist. If you use the Home
-Assistant App distribution, install it separately from
+package does not publish your service or watchlist. Production and non-local
+service endpoints must use HTTPS. The only HTTP exceptions are local/test
+endpoints: use `http://homeassistant.local:8787` for a local Home Assistant
+service, `localhost` for local use, or `price-watch.test` for tests. IP-literal
+and public HTTP destinations are rejected. Hostnames are normalized
+case-insensitively and with a trailing dot removed. Arbitrary `.local` names
+remain rejected, as do credentials, query parameters, and fragments in the
+service URL; retailer product and action URLs must remain HTTPS. If you use the
+Home Assistant App distribution, install it separately from
 [`carl09/price-watch-addons`](https://github.com/carl09/price-watch-addons).
 
 ## Install with HACS

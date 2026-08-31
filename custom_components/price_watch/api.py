@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import json
 import re
 from dataclasses import dataclass
@@ -321,33 +320,36 @@ def _trusted_service_code(value: object) -> str | None:
 def _is_local_http_host(hostname: str) -> bool:
     """Permit HTTP only for explicit local/test API endpoints."""
     host = hostname.lower().rstrip(".")
-    if host in {"localhost", "price-watch.test"} or host.endswith(".test"):
-        return True
-    try:
-        address = ipaddress.ip_address(host)
-    except ValueError:
-        return False
-    return address.is_loopback or address.is_private
+    return host in {"localhost", "homeassistant.local", "price-watch.test"}
 
 
 def normalise_base_url(value: str) -> str:
     """Return a canonical HTTPS URL, or HTTP only for a local API endpoint."""
-    parsed = urlsplit(value.strip())
+    try:
+        parsed = urlsplit(value.strip())
+        hostname = parsed.hostname
+        port = parsed.port
+    except (AttributeError, TypeError, ValueError) as err:
+        raise ValueError("base URL is malformed") from err
+    hostname = (hostname or "").lower().rstrip(".")
     if (
         parsed.scheme not in {"http", "https"}
         or not parsed.netloc
+        or not hostname
         or parsed.username
         or parsed.password
         or parsed.query
         or parsed.fragment
-        or (parsed.scheme == "http"
-            and (parsed.hostname is None or not _is_local_http_host(parsed.hostname)))
+        or (parsed.scheme == "http" and not _is_local_http_host(hostname))
     ):
-        raise ValueError("base URL must be HTTPS, or HTTP for a local endpoint")
+        raise ValueError("base URL must be HTTPS, or HTTP only for an approved local endpoint")
+    if ":" in hostname and not hostname.startswith("["):
+        hostname = f"[{hostname}]"
+    netloc = f"{hostname}:{port}" if port is not None else hostname
     return urlunsplit(
         (
             parsed.scheme,
-            parsed.netloc,
+            netloc,
             parsed.path.rstrip("/"),
             "",
             "",
@@ -702,6 +704,7 @@ class PriceWatchApiClient:
                         REQUEST_ID_HEADER: request_id,
                     },
                     json=payload if payload is not None else {},
+                    allow_redirects=False,
                 ) as response:
                     if response.status in {401, 403}:
                         raise PriceWatchAuthenticationError(response.status)
@@ -738,6 +741,7 @@ class PriceWatchApiClient:
                         REQUEST_ID_HEADER: request_id,
                     },
                     json=payload,
+                    allow_redirects=False,
                 ) as response:
                     if response.status in {401, 403}:
                         raise PriceWatchAuthenticationError(response.status)
@@ -773,6 +777,7 @@ class PriceWatchApiClient:
                 async with request(
                     f"{self._base_url}{path}",
                     headers=headers,
+                    allow_redirects=False,
                 ) as response:
                     if response.status in {401, 403}:
                         raise PriceWatchAuthenticationError(response.status)

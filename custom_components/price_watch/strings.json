@@ -22,7 +22,7 @@
       "cannot_connect": "Cannot connect to the Price Watch service.",
       "timeout": "The Price Watch service did not respond in time.",
       "invalid_response": "The Price Watch service returned an invalid health response.",
-      "invalid_url": "Enter an HTTPS URL, or an HTTP URL for a local endpoint, without credentials, query parameters or fragments."
+      "invalid_url": "Enter an HTTPS URL for production or non-local service endpoints. The only HTTP exceptions are local/test endpoints: use homeassistant.local for a local Home Assistant service, localhost for local use, or price-watch.test for tests. IP-literal and public HTTP destinations are rejected. Do not include credentials, query parameters, or fragments."
     },
     "abort": {
       "single_instance_allowed": "Only one Price Watch service can be configured until the API exposes a stable service instance ID.",

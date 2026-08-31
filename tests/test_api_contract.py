@@ -8,6 +8,7 @@ import pytest
 
 from custom_components.price_watch.api import (
     PriceWatchApiClient,
+    PriceWatchApiResponseError,
     PriceWatchInvalidResponseError,
     normalise_base_url,
 )
@@ -42,6 +43,24 @@ class _LargeBodyResponse(_Response):
 class _LargeBodySession:
     def get(self, url: str, **kwargs):
         return _LargeBodyResponse({})
+
+
+class _RedirectSession:
+    def __init__(self) -> None:
+        self.requests: list[dict[str, object]] = []
+
+    def _response(self, method: str, url: str, **kwargs):
+        self.requests.append({"method": method, "url": url, **kwargs})
+        return _Response({}, status=302)
+
+    def get(self, url: str, **kwargs):
+        return self._response("GET", url, **kwargs)
+
+    def post(self, url: str, **kwargs):
+        return self._response("POST", url, **kwargs)
+
+    def patch(self, url: str, **kwargs):
+        return self._response("PATCH", url, **kwargs)
 
 
 class _Session:
@@ -128,6 +147,25 @@ async def test_latest_events_are_type_filtered_and_deterministically_sorted():
     assert session.requests[0]["url"] == "https://price-watch.test/v1/events?limit=2&type=target_reached"
 
 
+@pytest.mark.parametrize("operation", ["health", "summary", "mutation"])
+async def test_authenticated_json_requests_never_follow_redirects(operation):
+    session = _RedirectSession()
+    client = PriceWatchApiClient("https://service.example", "secret-token", session)
+    with pytest.raises(PriceWatchApiResponseError):
+        if operation == "health":
+            await client.async_get_health()
+        elif operation == "summary":
+            await client.async_get_summary()
+        else:
+            await client.async_check_all(idempotency_key="redirect-test")
+    assert len(session.requests) == 1
+    request = session.requests[0]
+    assert request["allow_redirects"] is False
+    assert request["url"].startswith("https://service.example/")
+    assert request["headers"]["Authorization"] == "Bearer secret-token"
+    assert "evil.example" not in str(session.requests)
+
+
 async def test_json_responses_are_bounded_before_parsing():
     client = PriceWatchApiClient(
         "https://price-watch.test", "token", _LargeBodySession()
@@ -161,8 +199,16 @@ async def test_action_key_is_forwarded_unchanged_for_retries():
 async def test_service_and_product_url_boundaries():
     assert normalise_base_url("https://service.example/path/") == "https://service.example/path"
     assert normalise_base_url("http://price-watch.test:8787") == "http://price-watch.test:8787"
+    assert normalise_base_url("HTTP://HomeAssistant.Local.:8787/") == "http://homeassistant.local:8787"
     for value in (
         "http://service.example",
+        "http://evil.local",
+        "http://.local",
+        "http://evil..local",
+        "http://192.168.1.10:8787",
+        "http://127.0.0.1:8787",
+        "http://[malformed",
+        "http://homeassistant.local:8787?token=secret",
         "https://user:password@service.example",
         "https://service.example?token=secret",
     ):
