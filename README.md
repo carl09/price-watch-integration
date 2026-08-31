@@ -44,7 +44,8 @@ The token is stored in the Home Assistant config entry. It is not placed in YAML
 - Stable per-retailer devices and entities for operational status, strategy control, and diagnostics
 - Shopping List support when that Home Assistant capability is available
 - Per-watch enabled switch and target-price control
-- Local image reload action for one watch
+- Per-watch full product check and server-side product-image retry buttons
+- Local image reload action for one watch (unchanged; it only reloads Home Assistant's image cache)
 
 The integration only calls the configured Price Watch API. It does not scrape retailer sites, access the service database, or expose the service token to a dashboard card.
 
@@ -74,9 +75,11 @@ required; devices are created from the next successful coordinator refresh.
 
 Each watch device also has a **Product image** entity when a safe product image
 is available. The integration fetches the service-approved image internally and
-Home Assistant presents it through its standard image proxy. Browser-visible
-state never contains a retailer/CDN URL, the App's internal add-on hostname, or
-an App image capability token.
+Home Assistant presents it through its standard image proxy. The service image
+route requires the configured bearer token as well as its opaque capability
+token; the capability token is not authentication. Browser-visible state never
+contains a retailer/CDN URL, the App's internal add-on hostname, or an App image
+capability token.
 
 The primary current-price sensor exposes the associated Home Assistant image
 entity ID when that entity is registered. Lovelace cards can use this entity
@@ -85,14 +88,27 @@ available image entity, the rest of the watch remains usable. Safe image
 attributes expose only `image_status` and `image_last_updated`; no token, URL,
 or raw upstream error is exposed.
 
-The `price_watch.reload_image` action invalidates only the selected watch's
-local HA image cache and causes that ImageEntity to refresh the current service
-image for the same URL and observation. It never runs a retailer check or
-creates service observations/events. `price_watch.set_target_price` changes
-only the configured non-negative AUD-cent target; its API idempotency key is
-created internally and it has no observation/event/alert side effect. The
-per-watch `Enabled` switch uses `price_watch.set_enabled` and likewise does not
-run a check.
+Each watch device also exposes **Check product** and **Retry product image**
+buttons. **Check product** calls the existing authenticated watch-check API, so
+it has the normal observation, event, and notification behavior. **Retry product
+image** calls the service's authenticated image-only retry API using only the
+last source URL that produced an accepted cached image. A successful retry
+replaces the cached bytes and rotates its private capability atomically; a
+failed retry retains the prior image and changes no watch facts, observations,
+events, or notifications. Both actions use one idempotency key per button
+press. A watch without an accepted image source has an unavailable image-retry
+button. This includes legacy cached images whose
+`product_image_retry_available` flag is false because no source URL was
+persisted.
+
+The `price_watch.reload_image` action remains local-only: it invalidates only
+the selected watch's Home Assistant image cache and causes that ImageEntity to
+refresh the current service image for the same URL and observation. It never
+runs a retailer check or creates service observations/events. `price_watch.set_target_price`
+changes only the configured non-negative AUD-cent target; its API idempotency
+key is created internally and it has no observation/event/alert side effect.
+The per-watch `Enabled` switch uses `price_watch.set_enabled` and likewise does
+not run a check.
 
 ## Target-event notifications
 

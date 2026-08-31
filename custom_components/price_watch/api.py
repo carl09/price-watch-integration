@@ -153,6 +153,7 @@ class PriceWatchWatch:
     last_attempt_status: str | None = None
     last_attempt_error_code: str | None = None
     product_image_url: str | None = None
+    product_image_retry_available: bool = False
 
 
 @dataclass(frozen=True)
@@ -264,6 +265,13 @@ class PriceWatchProductImage:
     content_type: str
 
 
+@dataclass(frozen=True)
+class PriceWatchImageRetryResult:
+    """Validated result of a server-side image-only retry."""
+
+    status: Literal["image_cached"]
+
+
 _TRUSTED_SERVICE_CODES = frozenset(
     {
         "idempotency_conflict",
@@ -275,6 +283,13 @@ _TRUSTED_SERVICE_CODES = frozenset(
         "unsupported_retailer",
         "unsupported_strategy",
         "validation_error",
+        "image_retry_failed",
+        "image_source_unavailable",
+        "image_retry_in_progress",
+        "image_retry_stale",
+        "watch_check_in_progress",
+        "watch_check_cooldown",
+        "watch_changed",
     }
 )
 _ALLOWED_PRODUCT_IMAGE_CONTENT_TYPES = frozenset(
@@ -469,9 +484,13 @@ class PriceWatchApiClient:
         self, product_image_url: str, *, request_id: str | None = None
     ) -> PriceWatchProductImage:
         """Fetch one previously validated Price Watch image capability URL."""
+        watch_id = self._product_image_watch_id(product_image_url)
         if (
-            not isinstance(product_image_url, str)
-            or self._parse_product_image_url(product_image_url) != product_image_url
+            watch_id is None
+            or self._parse_product_image_url(
+                product_image_url, expected_watch_id=watch_id
+            )
+            != product_image_url
         ):
             raise ValueError("product image URL must be a validated capability URL")
 
@@ -548,6 +567,25 @@ class PriceWatchApiClient:
             request_id=request_id,
         )
         return self._parse_check_result(payload)
+
+    async def async_retry_product_image(
+        self,
+        watch_id: str,
+        *,
+        idempotency_key: str | None = None,
+        request_id: str | None = None,
+    ) -> PriceWatchImageRetryResult:
+        """Retry the service's last accepted image source only."""
+        if not isinstance(watch_id, str) or not watch_id:
+            raise ValueError("watch ID is required")
+        payload = await self._async_post_json(
+            f"{WATCHES_PATH}/{quote(watch_id, safe='')}/image/retry",
+            self._idempotency_key(idempotency_key),
+            request_id=request_id,
+        )
+        if not isinstance(payload, dict) or payload.get("status") != "image_cached":
+            raise PriceWatchInvalidResponseError
+        return PriceWatchImageRetryResult(status="image_cached")
 
     async def async_set_target_price(
         self,
@@ -920,8 +958,13 @@ class PriceWatchApiClient:
         if "current_observation" not in value:
             raise PriceWatchInvalidResponseError
         product_image_url = self._parse_product_image_url(
-            value.get("product_image_url")
+            value.get("product_image_url"), expected_watch_id=value["id"]
         )
+        product_image_retry_available = value.get("product_image_retry_available")
+        if not isinstance(product_image_retry_available, bool):
+            raise PriceWatchInvalidResponseError
+        if product_image_retry_available and product_image_url is None:
+            raise PriceWatchInvalidResponseError
         last_attempt_status = value.get("last_attempt_status")
         if last_attempt_status is not None and last_attempt_status not in _WATCH_STATUSES:
             raise PriceWatchInvalidResponseError
@@ -946,6 +989,7 @@ class PriceWatchApiClient:
             last_attempt_status=last_attempt_status,
             last_attempt_error_code=value.get("last_attempt_error_code"),
             product_image_url=product_image_url,
+            product_image_retry_available=product_image_retry_available,
         )
 
     @staticmethod
@@ -966,66 +1010,71 @@ class PriceWatchApiClient:
             raise PriceWatchInvalidResponseError
         return value
 
-    def _parse_product_image_url(self, value: object) -> str | None:
-        """Accept only a Price Watch image endpoint, never a retailer URL.
-
-        The App returns its image capability as a relative URL. Resolve that
-        narrow endpoint against the configured service base URL so the
-        integration can fetch it internally.
-        """
+    def _parse_product_image_url(
+        self, value: object, *, expected_watch_id: str
+    ) -> str | None:
+        """Accept only the expected watch's Price Watch image capability route."""
         if value is None:
             return None
         if not isinstance(value, str) or not value:
+            raise PriceWatchInvalidResponseError
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", expected_watch_id):
             raise PriceWatchInvalidResponseError
 
         try:
             image_url = urlsplit(value)
             base_url = urlsplit(self._base_url)
             if not image_url.scheme and not image_url.netloc:
-                return self._parse_relative_product_image_url(image_url, base_url)
-            valid_url = (
-                image_url.scheme == base_url.scheme
-                and bool(image_url.netloc)
-                and not image_url.username
-                and not image_url.password
-                and not image_url.fragment
-                and image_url.hostname == base_url.hostname
-                and image_url.port == base_url.port
-                and image_url.scheme == base_url.scheme
-            )
-        except ValueError:
-            valid_url = False
-        if not valid_url:
-            raise PriceWatchInvalidResponseError
-
-        if image_url.query:
+                return self._parse_relative_product_image_url(
+                    image_url, base_url, expected_watch_id
+                )
+            if (
+                image_url.scheme != base_url.scheme
+                or not image_url.netloc
+                or image_url.username
+                or image_url.password
+                or image_url.fragment
+                or image_url.hostname != base_url.hostname
+                or image_url.port != base_url.port
+            ):
+                raise PriceWatchInvalidResponseError
+            base_path = base_url.path.rstrip("/")
+            route_path = f"/v1/watches/{expected_watch_id}/image"
+            expected_path = f"{base_path}{route_path}" if base_path else route_path
+            if image_url.path != expected_path:
+                raise PriceWatchInvalidResponseError
             return self._parse_relative_product_image_url(
                 urlsplit(
-                    urlunsplit(("", "", image_url.path, image_url.query, ""))
+                    urlunsplit(("", "", route_path, image_url.query, ""))
                 ),
                 base_url,
+                expected_watch_id,
             )
+        except ValueError as err:
+            raise PriceWatchInvalidResponseError from err
 
+    def _product_image_watch_id(self, value: object) -> str | None:
+        """Extract the route watch ID so direct image fetches get the same guard."""
+        if not isinstance(value, str) or not value:
+            return None
+        try:
+            image_url = urlsplit(value)
+            base_url = urlsplit(self._base_url)
+        except ValueError:
+            return None
+        path = image_url.path
         base_path = base_url.path.rstrip("/")
-        allowed_path_prefix = f"{base_path}/v1/" if base_path else "/v1/"
-        if not image_url.path.startswith(allowed_path_prefix):
-            raise PriceWatchInvalidResponseError
-        return urlunsplit(
-            (
-                image_url.scheme,
-                image_url.netloc,
-                image_url.path,
-                "",
-                "",
-            )
-        )
+        if base_path and path.startswith(base_path):
+            path = path[len(base_path) :]
+        match = re.fullmatch(r"/v1/watches/([A-Za-z0-9_-]+)/image", path)
+        return match.group(1) if match else None
 
     @staticmethod
-    def _parse_relative_product_image_url(image_url, base_url) -> str:
-        """Resolve the App's one supported relative image capability route."""
-        if image_url.fragment or not re.fullmatch(
-            r"/v1/watches/[A-Za-z0-9_-]+/image", image_url.path
-        ):
+    def _parse_relative_product_image_url(
+        image_url, base_url, expected_watch_id: str
+    ) -> str:
+        """Resolve one exact relative image capability route."""
+        if image_url.fragment or image_url.path != f"/v1/watches/{expected_watch_id}/image":
             raise PriceWatchInvalidResponseError
         try:
             query = parse_qsl(

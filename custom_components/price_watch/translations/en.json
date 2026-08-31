@@ -29,6 +29,16 @@
       "reconfigure_successful": "Price Watch was reconfigured successfully."
     }
   },
+  "entity": {
+    "button": {
+      "watch_check": {
+        "name": "Check product"
+      },
+      "watch_retry_image": {
+        "name": "Retry product image"
+      }
+    }
+  },
   "services": {
     "set_enabled": {
       "name": "Set watch enabled state",

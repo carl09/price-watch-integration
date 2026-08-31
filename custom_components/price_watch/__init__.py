@@ -21,6 +21,7 @@ from .const import (
     DATA_WATCH_SWITCH_MANAGERS,
     DATA_RETAILER_BUTTON_MANAGERS,
     DATA_RETAILER_SELECT_MANAGERS,
+    DATA_WATCH_BUTTON_MANAGERS,
     DATA_RETAILER_SENSOR_MANAGERS,
     DATA_RETAILER_SWITCH_MANAGERS,
     DATA_SENSOR_MANAGERS,
@@ -97,6 +98,7 @@ def _cleanup_entry_runtime_data(hass: HomeAssistant, entry: ConfigEntry) -> None
     number_managers = domain_data.get(DATA_NUMBER_MANAGERS)
     watch_switch_managers = domain_data.get(DATA_WATCH_SWITCH_MANAGERS)
     retailer_button_managers = domain_data.get(DATA_RETAILER_BUTTON_MANAGERS)
+    watch_button_managers = domain_data.get(DATA_WATCH_BUTTON_MANAGERS)
     if clients is not None:
         clients.pop(entry.entry_id, None)
     if coordinators is not None:
@@ -127,6 +129,10 @@ def _cleanup_entry_runtime_data(hass: HomeAssistant, entry: ConfigEntry) -> None
         manager = watch_switch_managers.pop(entry.entry_id, None)
         if manager is not None:
             manager.stop()
+    if watch_button_managers is not None:
+        manager = watch_button_managers.pop(entry.entry_id, None)
+        if manager is not None:
+            manager.stop()
     for retailer_managers in (
         retailer_sensor_managers,
         retailer_select_managers,
@@ -153,5 +159,6 @@ def _cleanup_entry_runtime_data(hass: HomeAssistant, entry: ConfigEntry) -> None
         and not domain_data.get(DATA_RETAILER_SELECT_MANAGERS)
         and not domain_data.get(DATA_RETAILER_SWITCH_MANAGERS)
         and not domain_data.get(DATA_RETAILER_BUTTON_MANAGERS)
+        and not domain_data.get(DATA_WATCH_BUTTON_MANAGERS)
     ):
         hass.data.pop(DOMAIN)

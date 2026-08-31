@@ -132,6 +132,7 @@ def _watch(
         last_successful_check_at="2026-08-25T04:00:00.000Z",
         last_attempt_at="2026-08-25T04:00:00.000Z",
         product_image_url=product_image_url,
+        product_image_retry_available=product_image_url is not None,
     )
 
 

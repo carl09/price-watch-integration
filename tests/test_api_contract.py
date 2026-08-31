@@ -97,6 +97,7 @@ def _watch(watch_id: str) -> dict[str, object]:
         "last_attempt_at": None,
         "last_attempt_status": "check_failed",
         "last_attempt_error_code": "blocked",
+        "product_image_retry_available": False,
     }
 
 
@@ -190,6 +191,30 @@ async def test_target_price_mutation_generates_internal_idempotency_and_validate
         await client.async_set_target_price("watch-1", -1)
     with pytest.raises(ValueError):
         await client.async_set_target_price("watch-1", True)
+
+
+async def test_image_retry_uses_authenticated_idempotent_post():
+    session = _Session([{"status": "image_cached"}, {"status": "image_cached"}])
+    client = PriceWatchApiClient("https://price-watch.test", "token", session)
+
+    first = await client.async_retry_product_image(
+        "watch-1", idempotency_key="image-retry-1"
+    )
+    replay = await client.async_retry_product_image(
+        "watch-1", idempotency_key="image-retry-1"
+    )
+
+    assert first.status == "image_cached"
+    assert replay == first
+    assert [request["method"] for request in session.requests] == ["POST", "POST"]
+    assert [request["url"] for request in session.requests] == [
+        "https://price-watch.test/v1/watches/watch-1/image/retry",
+        "https://price-watch.test/v1/watches/watch-1/image/retry",
+    ]
+    assert [request["headers"]["Idempotency-Key"] for request in session.requests] == [
+        "image-retry-1",
+        "image-retry-1",
+    ]
 
 
 async def test_action_key_format_is_bounded():

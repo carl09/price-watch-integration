@@ -3,6 +3,7 @@
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from homeassistant.components.button import SERVICE_PRESS
 from homeassistant.const import STATE_UNAVAILABLE
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
@@ -64,6 +65,7 @@ def _watch(
     variant_label: str = "Canyon / XS",
     enabled: bool = True,
     product_image_url: str | None = None,
+    product_image_retry_available: bool | None = None,
 ) -> PriceWatchWatch:
     return PriceWatchWatch(
         id=watch_id,
@@ -93,10 +95,18 @@ def _watch(
         last_attempt_status="available",
         last_attempt_error_code=None,
         product_image_url=product_image_url,
+        product_image_retry_available=(
+            product_image_retry_available
+            if product_image_retry_available is not None
+            else product_image_url is not None
+        ),
     )
 
 
-def _api_watch_payload(product_image_url: object | None = None) -> dict[str, object]:
+def _api_watch_payload(
+    product_image_url: object | None = None,
+    product_image_retry_available: bool | None = None,
+) -> dict[str, object]:
     """Return a minimal watch response with an optional image endpoint."""
     payload: dict[str, object] = {
         "id": "watch-one",
@@ -111,6 +121,11 @@ def _api_watch_payload(product_image_url: object | None = None) -> dict[str, obj
         "current_observation": None,
         "last_successful_check_at": None,
         "last_attempt_at": None,
+        "product_image_retry_available": (
+            product_image_retry_available
+            if product_image_retry_available is not None
+            else product_image_url is not None
+        ),
     }
     if product_image_url is not None:
         payload["product_image_url"] = product_image_url
@@ -191,6 +206,64 @@ def _entity_id(entity_registry, platform: str, unique_id: str) -> str:
     entity_id = entity_registry.async_get_entity_id(platform, DOMAIN, unique_id)
     assert entity_id is not None
     return entity_id
+
+
+async def test_watch_buttons_run_their_distinct_authenticated_actions(hass):
+    """Each watch button calls only its own API operation and refreshes state."""
+    watch = _watch(
+        "watch-one",
+        product_image_url=(
+            "http://price-watch.test:8787/v1/watches/watch-one/image?token="
+            + "a" * 43
+        ),
+    )
+    entry = await _setup_entry(hass, (watch,))
+    entity_registry = er.async_get(hass)
+    check_id = _entity_id(entity_registry, "button", "watch_watch-one_check")
+    retry_id = _entity_id(entity_registry, "button", "watch_watch-one_retry_image")
+    client = hass.data[DOMAIN][DATA_CLIENTS][entry.entry_id]
+    client.async_check_watch = AsyncMock()
+    client.async_retry_product_image = AsyncMock()
+    coordinator = hass.data[DOMAIN][DATA_COORDINATORS][entry.entry_id]
+    coordinator.async_request_refresh = AsyncMock()
+
+    await hass.services.async_call(
+        "button", SERVICE_PRESS, {"entity_id": check_id}, blocking=True
+    )
+    client.async_check_watch.assert_awaited_once()
+    assert client.async_check_watch.await_args.args == ("watch-one",)
+    client.async_retry_product_image.assert_not_awaited()
+    coordinator.async_request_refresh.assert_awaited_once()
+
+    coordinator.async_request_refresh.reset_mock()
+    await hass.services.async_call(
+        "button", SERVICE_PRESS, {"entity_id": retry_id}, blocking=True
+    )
+    client.async_retry_product_image.assert_awaited_once()
+    assert client.async_retry_product_image.await_args.args == ("watch-one",)
+    client.async_check_watch.assert_awaited_once()
+    coordinator.async_request_refresh.assert_awaited_once()
+    await _unload_entry(hass, entry)
+
+
+async def test_watch_image_retry_button_is_unavailable_without_accepted_image(hass):
+    """Image retry cannot be pressed when the service has no accepted source."""
+    entry = await _setup_entry(
+        hass,
+        (
+            _watch(
+                "watch-one",
+                product_image_url=(
+                    "http://price-watch.test:8787/v1/watches/watch-one/image?token="
+                    + "a" * 43
+                ),
+                product_image_retry_available=False,
+            ),
+        ),
+    )
+    entity_id = _entity_id(er.async_get(hass), "button", "watch_watch-one_retry_image")
+    assert hass.states.get(entity_id).state == STATE_UNAVAILABLE
+    await _unload_entry(hass, entry)
 
 
 async def test_watch_enabled_switch_calls_only_set_enabled_and_refreshes(hass):
@@ -425,6 +498,8 @@ async def test_two_watches_create_distinct_devices_and_linked_entities(hass):
             ("image", f"watch_{watch.id}_product_image"),
             ("number", f"watch_{watch.id}_target_price_control"),
             ("switch", f"watch_{watch.id}_enabled"),
+            ("button", f"watch_{watch.id}_check"),
+            ("button", f"watch_{watch.id}_retry_image"),
             ("binary_sensor", f"watch_{watch.id}_target_match"),
         ):
             entity_id = _entity_id(entity_registry, platform, unique_id)
@@ -532,6 +607,24 @@ async def test_primary_sensor_does_not_expose_image_capability_data(hass):
     await _unload_entry(hass, entry)
 
 
+async def test_legacy_cached_image_is_not_retryable_without_a_persisted_source():
+    """The client carries server retry availability separately from its URL."""
+    client = PriceWatchApiClient(
+        "http://price-watch.test:8787",
+        "test-token",
+        AsyncMock(),
+    )
+    parsed_watch = client._parse_watch(
+        _api_watch_payload(
+            "http://price-watch.test:8787/v1/watches/watch-one/image?token="
+            + "a" * 43,
+            product_image_retry_available=False,
+        )
+    )
+    assert parsed_watch.product_image_url is not None
+    assert parsed_watch.product_image_retry_available is False
+
+
 async def test_product_image_url_rejects_retailer_url():
     """A retailer-hosted image must never reach Home Assistant entity state."""
     client = PriceWatchApiClient(
@@ -547,23 +640,25 @@ async def test_product_image_url_rejects_retailer_url():
         client._parse_watch(payload)
 
 
-async def test_product_image_url_accepts_only_a_same_service_endpoint():
-    """An image can be exposed only from the configured Price Watch service."""
+async def test_product_image_url_accepts_exact_same_service_capability_endpoint():
+    """An absolute image URL needs the expected watch route and token."""
     client = PriceWatchApiClient(
         "http://price-watch.test:8787",
         "test-token",
         AsyncMock(),
     )
+    capability_token = "a" * 43
 
     parsed_watch = client._parse_watch(
         _api_watch_payload(
-            "http://price-watch.test:8787/v1/watches/watch-one/image"
+            "http://price-watch.test:8787/v1/watches/watch-one/image?token="
+            + capability_token
         )
     )
 
-    assert (
-        parsed_watch.product_image_url
-        == "http://price-watch.test:8787/v1/watches/watch-one/image"
+    assert parsed_watch.product_image_url == (
+        "http://price-watch.test:8787/v1/watches/watch-one/image?token="
+        + capability_token
     )
     assert client._parse_watch(_api_watch_payload()).product_image_url is None
 
@@ -596,11 +691,14 @@ async def test_product_image_url_accepts_app_relative_capability_endpoint():
         "/v1/watches/watch-one/image?token=short",
         "/v1/watches/watch-one/image?token=" + "a" * 43 + "&extra=value",
         "/v1/watches/watch-one/other?token=" + "a" * 43,
+        "http://price-watch.test:8787/v1/watches/watch-one/image",
+        "http://price-watch.test:8787/v1/other?token=" + "a" * 43,
+        "http://price-watch.test:8787/v1/watches/watch-two/image?token=" + "a" * 43,
         "//www.lornajane.com.au/v1/watches/watch-one/image?token=" + "a" * 43,
     ),
 )
-async def test_product_image_url_rejects_invalid_relative_capability_endpoint(image_url):
-    """Relative values cannot escape the expected App image capability route."""
+async def test_product_image_url_rejects_invalid_capability_endpoint(image_url):
+    """Values cannot escape the expected App image capability route."""
     client = PriceWatchApiClient(
         "http://price-watch.test:8787",
         "test-token",
