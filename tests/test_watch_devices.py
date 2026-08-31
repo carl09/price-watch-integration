@@ -11,6 +11,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.price_watch.api import (
     PriceWatchApiClient,
     PriceWatchCurrentObservation,
+    PriceWatchEnabledResult,
     PriceWatchEvent,
     PriceWatchInvalidResponseError,
     PriceWatchSummary,
@@ -21,11 +22,14 @@ from custom_components.price_watch.api import (
 from custom_components.price_watch.const import (
     CONF_API_TOKEN,
     CONF_BASE_URL,
+    DATA_CLIENTS,
     DATA_COORDINATORS,
     DOMAIN,
     SERVICE_CHECK_ALL,
     SERVICE_CHECK_WATCH,
+    SERVICE_RELOAD_IMAGE,
     SERVICE_SET_ENABLED,
+    SERVICE_SET_TARGET_PRICE,
 )
 from custom_components.price_watch.coordinator import PriceWatchCoordinatorData
 
@@ -143,10 +147,22 @@ async def _unload_entry(hass, config_entry) -> None:
 async def test_action_services_register_once_after_setup_and_unregister_on_unload(hass):
     """Action discovery follows successful entry setup and unload cleanup."""
     entry = await _setup_entry(hass, (_watch("watch-one"),))
-    for service in (SERVICE_CHECK_ALL, SERVICE_CHECK_WATCH, SERVICE_SET_ENABLED):
+    for service in (
+        SERVICE_CHECK_ALL,
+        SERVICE_CHECK_WATCH,
+        SERVICE_SET_ENABLED,
+        SERVICE_RELOAD_IMAGE,
+        SERVICE_SET_TARGET_PRICE,
+    ):
         assert hass.services.has_service(DOMAIN, service)
     await _unload_entry(hass, entry)
-    for service in (SERVICE_CHECK_ALL, SERVICE_CHECK_WATCH, SERVICE_SET_ENABLED):
+    for service in (
+        SERVICE_CHECK_ALL,
+        SERVICE_CHECK_WATCH,
+        SERVICE_SET_ENABLED,
+        SERVICE_RELOAD_IMAGE,
+        SERVICE_SET_TARGET_PRICE,
+    ):
         assert not hass.services.has_service(DOMAIN, service)
 
 
@@ -161,7 +177,13 @@ async def test_failed_entry_setup_does_not_register_action_services(hass):
     ):
         assert not await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
-    for service in (SERVICE_CHECK_ALL, SERVICE_CHECK_WATCH, SERVICE_SET_ENABLED):
+    for service in (
+        SERVICE_CHECK_ALL,
+        SERVICE_CHECK_WATCH,
+        SERVICE_SET_ENABLED,
+        SERVICE_RELOAD_IMAGE,
+        SERVICE_SET_TARGET_PRICE,
+    ):
         assert not hass.services.has_service(DOMAIN, service)
 
 
@@ -169,6 +191,121 @@ def _entity_id(entity_registry, platform: str, unique_id: str) -> str:
     entity_id = entity_registry.async_get_entity_id(platform, DOMAIN, unique_id)
     assert entity_id is not None
     return entity_id
+
+
+async def test_watch_enabled_switch_calls_only_set_enabled_and_refreshes(hass):
+    """The per-watch switch changes enablement without checking or observing."""
+    watch = _watch("watch-one")
+    entry = await _setup_entry(hass, (watch,))
+    entity_id = _entity_id(er.async_get(hass), "switch", "watch_watch-one_enabled")
+    client = hass.data[DOMAIN][DATA_CLIENTS][entry.entry_id]
+    client.async_set_enabled = AsyncMock(
+        return_value=PriceWatchEnabledResult("watch-one", False)
+    )
+    client.async_check_watch = AsyncMock()
+    coordinator = hass.data[DOMAIN][DATA_COORDINATORS][entry.entry_id]
+    coordinator.async_request_refresh = AsyncMock()
+
+    await hass.services.async_call(
+        "switch", "turn_off", {"entity_id": entity_id}, blocking=True
+    )
+
+    client.async_set_enabled.assert_awaited_once()
+    assert client.async_set_enabled.await_args.args[:2] == ("watch-one", False)
+    client.async_check_watch.assert_not_awaited()
+    coordinator.async_request_refresh.assert_awaited_once()
+    await _unload_entry(hass, entry)
+
+
+async def test_watch_enabled_switch_failure_does_not_refresh_or_check(hass):
+    """A failed enablement mutation leaves service state and checks untouched."""
+    watch = _watch("watch-one")
+    entry = await _setup_entry(hass, (watch,))
+    entity_id = _entity_id(er.async_get(hass), "switch", "watch_watch-one_enabled")
+    client = hass.data[DOMAIN][DATA_CLIENTS][entry.entry_id]
+    client.async_set_enabled = AsyncMock(side_effect=PriceWatchTransportError())
+    client.async_check_watch = AsyncMock()
+    coordinator = hass.data[DOMAIN][DATA_COORDINATORS][entry.entry_id]
+    coordinator.async_request_refresh = AsyncMock()
+
+    with pytest.raises(Exception):
+        await hass.services.async_call(
+            "switch", "turn_off", {"entity_id": entity_id}, blocking=True
+        )
+
+    client.async_check_watch.assert_not_awaited()
+    coordinator.async_request_refresh.assert_not_awaited()
+    await _unload_entry(hass, entry)
+
+
+async def test_target_price_number_and_service_have_no_check_side_effect(hass):
+    """Target changes update configuration only and use internal idempotency."""
+    watch = _watch("watch-one")
+    entry = await _setup_entry(hass, (watch,))
+    entity_registry = er.async_get(hass)
+    number_id = _entity_id(
+        entity_registry, "number", "watch_watch-one_target_price_control"
+    )
+    client = hass.data[DOMAIN][DATA_CLIENTS][entry.entry_id]
+    client.async_set_target_price = AsyncMock(return_value=watch)
+    client.async_check_watch = AsyncMock()
+    coordinator = hass.data[DOMAIN][DATA_COORDINATORS][entry.entry_id]
+    coordinator.async_request_refresh = AsyncMock()
+
+    await hass.services.async_call(
+        "number",
+        "set_value",
+        {"entity_id": number_id, "value": 12.34},
+        blocking=True,
+    )
+
+    client.async_set_target_price.assert_awaited_once()
+    assert client.async_set_target_price.await_args.args[:2] == ("watch-one", 1234)
+    assert "idempotency_key" not in client.async_set_target_price.await_args.kwargs
+    client.async_check_watch.assert_not_awaited()
+    coordinator.async_request_refresh.assert_awaited_once()
+    await _unload_entry(hass, entry)
+
+
+async def test_set_target_price_service_rejects_negative_without_side_effect(hass):
+    watch = _watch("watch-one")
+    entry = await _setup_entry(hass, (watch,))
+    client = hass.data[DOMAIN][DATA_CLIENTS][entry.entry_id]
+    client.async_set_target_price = AsyncMock(return_value=watch)
+    with pytest.raises(Exception):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_SET_TARGET_PRICE,
+            {"watch_id": "watch-one", "target_price_cents": -1},
+            blocking=True,
+        )
+    client.async_set_target_price.assert_not_awaited()
+    await _unload_entry(hass, entry)
+
+
+async def test_set_target_price_service_generates_internal_key_and_refreshes(hass):
+    """The custom target service has no caller key and no check side effect."""
+    watch = _watch("watch-one")
+    entry = await _setup_entry(hass, (watch,))
+    client = hass.data[DOMAIN][DATA_CLIENTS][entry.entry_id]
+    client.async_set_target_price = AsyncMock(return_value=watch)
+    client.async_check_watch = AsyncMock()
+    coordinator = hass.data[DOMAIN][DATA_COORDINATORS][entry.entry_id]
+    coordinator.async_request_refresh = AsyncMock()
+
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_SET_TARGET_PRICE,
+        {"watch_id": "watch-one", "target_price_cents": 1234},
+        blocking=True,
+    )
+
+    client.async_set_target_price.assert_awaited_once()
+    assert client.async_set_target_price.await_args.args[:2] == ("watch-one", 1234)
+    assert "idempotency_key" not in client.async_set_target_price.await_args.kwargs
+    client.async_check_watch.assert_not_awaited()
+    coordinator.async_request_refresh.assert_awaited_once()
+    await _unload_entry(hass, entry)
 
 
 async def test_watch_id_creates_stable_device_and_existing_price_entity(hass):
@@ -286,6 +423,8 @@ async def test_two_watches_create_distinct_devices_and_linked_entities(hass):
             ("sensor", f"watch_{watch.id}_status"),
             ("sensor", f"watch_{watch.id}_last_checked"),
             ("image", f"watch_{watch.id}_product_image"),
+            ("number", f"watch_{watch.id}_target_price_control"),
+            ("switch", f"watch_{watch.id}_enabled"),
             ("binary_sensor", f"watch_{watch.id}_target_match"),
         ):
             entity_id = _entity_id(entity_registry, platform, unique_id)

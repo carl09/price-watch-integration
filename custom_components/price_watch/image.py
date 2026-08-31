@@ -7,9 +7,12 @@ from uuid import uuid4
 
 from homeassistant.components.image import ImageEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.dispatcher import (
+    async_dispatcher_connect,
+    async_dispatcher_send,
+)
 from homeassistant.util import dt as dt_util
 
 from .api import (
@@ -27,6 +30,7 @@ from .const import (
     DATA_IMAGE_ENTITY_IDS,
     DOMAIN,
     SIGNAL_IMAGE_ENTITY_REGISTERED,
+    SIGNAL_IMAGE_RELOAD,
 )
 from .coordinator import PriceWatchCoordinator
 from .image_proxy import PriceWatchImageCache, PriceWatchImageUnavailable
@@ -69,6 +73,7 @@ class PriceWatchWatchImage(PriceWatchWatchEntity, ImageEntity):
         self._attr_unique_id = f"watch_{watch.id}_product_image"
         self._image_source = self._source(watch)
         self._attr_image_last_updated = dt_util.utcnow()
+        self._image_status = "unavailable"
 
     @property
     def available(self) -> bool:
@@ -93,6 +98,13 @@ class PriceWatchWatchImage(PriceWatchWatchEntity, ImageEntity):
     async def async_added_to_hass(self) -> None:
         """Register this HA-managed image with its matching current-price sensor."""
         await super().async_added_to_hass()
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                SIGNAL_IMAGE_RELOAD,
+                self._handle_image_reload,
+            )
+        )
         image_ids = self.hass.data[DOMAIN][DATA_IMAGE_ENTITY_IDS][
             self.coordinator.entry_id
         ]
@@ -121,6 +133,25 @@ class PriceWatchWatchImage(PriceWatchWatchEntity, ImageEntity):
             )
         await super().async_will_remove_from_hass()
 
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Expose only bounded image health metadata."""
+        return {
+            "image_status": self._image_status,
+            "image_last_updated": self._attr_image_last_updated.isoformat()
+            if self._attr_image_last_updated is not None
+            else None,
+        }
+
+    @callback
+    def _handle_image_reload(self, entry_id: str, watch_id: str) -> None:
+        """Invalidate the HA image proxy state for this watch only."""
+        if entry_id != self.coordinator.entry_id or watch_id != self._watch_id:
+            return
+        self._attr_image_last_updated = dt_util.utcnow()
+        self._image_status = "refresh_requested"
+        self.async_write_ha_state()
+
     async def async_image(self) -> bytes | None:
         """Fetch guarded product-image bytes for HA's standard image endpoint."""
         request_id = str(uuid4())
@@ -129,6 +160,7 @@ class PriceWatchWatchImage(PriceWatchWatchEntity, ImageEntity):
                 self._watch_id, request_id=request_id
             )
         except PriceWatchImageUnavailable:
+            self._image_status = "unavailable"
             return None
         except (
             PriceWatchAuthenticationError,
@@ -138,6 +170,7 @@ class PriceWatchWatchImage(PriceWatchWatchEntity, ImageEntity):
             PriceWatchApiResponseError,
             ValueError,
         ) as err:
+            self._image_status = "unavailable"
             log_failure(
                 "image_entity",
                 "/v1/watches/{watch_id}/image",
@@ -147,6 +180,7 @@ class PriceWatchWatchImage(PriceWatchWatchEntity, ImageEntity):
             )
             return None
         self._attr_content_type = image.content_type
+        self._image_status = "available"
         log_success(
             "image_entity",
             "/v1/watches/{watch_id}/image",

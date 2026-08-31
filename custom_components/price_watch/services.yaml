@@ -46,6 +46,34 @@ set_enabled:
       required: false
       selector:
         text: {}
+set_target_price:
+  name: Set watch target price
+  description: Set one watch target price in non-negative AUD cents without running a check.
+  fields:
+    watch_id:
+      name: Watch ID
+      description: Immutable Price Watch watch ID.
+      required: true
+      selector:
+        text: {}
+    target_price_cents:
+      name: Target price in cents
+      description: Non-negative AUD integer cents. Idempotency is generated internally.
+      required: true
+      selector:
+        number:
+          min: 0
+          step: 1
+reload_image:
+  name: Reload watch image
+  description: Clear and refresh one cached Home Assistant image without running a watch check.
+  fields:
+    watch_id:
+      name: Watch ID
+      description: Immutable Price Watch watch ID.
+      required: true
+      selector:
+        text: {}
 add_to_shopping_list:
   name: Add watch to Shopping List
   description: Add the current watch details to Home Assistant's Shopping List.

@@ -6,11 +6,20 @@ import asyncio
 from dataclasses import dataclass
 from uuid import uuid4
 
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.dispatcher import async_dispatcher_send
+
 from .api import (
     PriceWatchApiClient,
+    PriceWatchApiResponseError,
+    PriceWatchAuthenticationError,
+    PriceWatchInvalidResponseError,
     PriceWatchProductImage,
+    PriceWatchTimeoutError,
+    PriceWatchTransportError,
     PriceWatchWatch,
 )
+from .const import SIGNAL_IMAGE_RELOAD
 from .coordinator import PriceWatchCoordinator
 
 
@@ -31,13 +40,59 @@ class PriceWatchImageCache:
     """Fetch and cache only image capabilities present in coordinator data."""
 
     def __init__(
-        self, coordinator: PriceWatchCoordinator, client: PriceWatchApiClient
+        self,
+        hass: HomeAssistant,
+        coordinator: PriceWatchCoordinator,
+        client: PriceWatchApiClient,
     ) -> None:
+        self._hass = hass
         self._coordinator = coordinator
         self._client = client
         self._cache: dict[str, _CachedProductImage] = {}
         self._lock = asyncio.Lock()
         self._unsub = coordinator.async_add_listener(self._handle_coordinator_update)
+
+    async def async_reload_image(self, watch_id: str) -> bool:
+        """Refetch one same-source image and notify its HA ImageEntity."""
+        watch = self._watch(watch_id)
+        if watch is None or watch.product_image_url is None:
+            return False
+        async with self._lock:
+            previous = self._cache.get(watch_id)
+            try:
+                image = await self._client.async_get_product_image(
+                    watch.product_image_url, request_id=str(uuid4())
+                )
+            except (
+                PriceWatchAuthenticationError,
+                PriceWatchTimeoutError,
+                PriceWatchTransportError,
+                PriceWatchInvalidResponseError,
+                PriceWatchApiResponseError,
+                ValueError,
+            ):
+                if previous is not None:
+                    self._cache[watch_id] = previous
+                return False
+            current_watch = self._watch(watch_id)
+            if current_watch is None or not self._same_image_source(
+                current_watch, watch
+            ):
+                if previous is not None:
+                    self._cache[watch_id] = previous
+                return False
+            self._cache[watch_id] = _CachedProductImage(
+                product_image_url=watch.product_image_url,
+                observation_id=watch.current_observation_id,
+                image=image,
+            )
+        async_dispatcher_send(
+            self._hass,
+            SIGNAL_IMAGE_RELOAD,
+            self._coordinator.entry_id,
+            watch_id,
+        )
+        return True
 
     async def async_get_image(
         self, watch_id: str, *, request_id: str

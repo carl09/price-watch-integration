@@ -28,5 +28,45 @@
       "single_instance_allowed": "Only one Price Watch service can be configured until the API exposes a stable service instance ID.",
       "reconfigure_successful": "Price Watch was reconfigured successfully."
     }
+  },
+  "services": {
+    "set_enabled": {
+      "name": "Set watch enabled state",
+      "description": "Enable or disable one Price Watch watch.",
+      "fields": {
+        "watch_id": {
+          "name": "Watch ID",
+          "description": "Immutable Price Watch watch ID."
+        },
+        "enabled": {
+          "name": "Enabled",
+          "description": "Whether Price Watch should schedule checks for this watch."
+        }
+      }
+    },
+    "set_target_price": {
+      "name": "Set watch target price",
+      "description": "Set one watch target price in non-negative AUD cents without running a check.",
+      "fields": {
+        "watch_id": {
+          "name": "Watch ID",
+          "description": "Immutable Price Watch watch ID."
+        },
+        "target_price_cents": {
+          "name": "Target price in cents",
+          "description": "Non-negative AUD integer cents. Idempotency is generated internally."
+        }
+      }
+    },
+    "reload_image": {
+      "name": "Reload watch image",
+      "description": "Refresh one cached Home Assistant image without running a watch check.",
+      "fields": {
+        "watch_id": {
+          "name": "Watch ID",
+          "description": "Immutable Price Watch watch ID."
+        }
+      }
+    }
   }
 }

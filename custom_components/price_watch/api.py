@@ -549,6 +549,30 @@ class PriceWatchApiClient:
         )
         return self._parse_check_result(payload)
 
+    async def async_set_target_price(
+        self,
+        watch_id: str,
+        target_price_cents: int,
+        *,
+        request_id: str | None = None,
+    ) -> PriceWatchWatch:
+        """Set a non-negative target without creating an observation or event."""
+        if not isinstance(watch_id, str) or not watch_id:
+            raise ValueError("watch ID is required")
+        if (
+            not isinstance(target_price_cents, int)
+            or isinstance(target_price_cents, bool)
+            or target_price_cents < 0
+        ):
+            raise ValueError("target price must be a non-negative integer")
+        payload = await self._async_patch_json(
+            f"{WATCHES_PATH}/{quote(watch_id, safe='')}",
+            self._idempotency_key(None),
+            {"target_price_cents": target_price_cents},
+            request_id=request_id,
+        )
+        return self._parse_watch(payload)
+
     async def async_set_enabled(
         self,
         watch_id: str,
@@ -725,7 +749,7 @@ class PriceWatchApiClient:
         self,
         path: str,
         idempotency_key: str,
-        payload: dict[str, bool],
+        payload: dict[str, object],
         *,
         request_id: str | None = None,
     ) -> object:

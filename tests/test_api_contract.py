@@ -76,6 +76,10 @@ class _Session:
         self.requests.append({"method": "POST", "url": url, **kwargs})
         return _Response(next(self.payloads))
 
+    def patch(self, url: str, **kwargs):
+        self.requests.append({"method": "PATCH", "url": url, **kwargs})
+        return _Response(next(self.payloads))
+
 
 def _watch(watch_id: str) -> dict[str, object]:
     return {
@@ -172,6 +176,20 @@ async def test_json_responses_are_bounded_before_parsing():
     )
     with pytest.raises(PriceWatchInvalidResponseError):
         await client.async_get_summary()
+
+
+async def test_target_price_mutation_generates_internal_idempotency_and_validates_cents():
+    session = _Session([_watch("watch-1")])
+    client = PriceWatchApiClient("https://price-watch.test", "token", session)
+    await client.async_set_target_price("watch-1", 1234)
+    request = session.requests[0]
+    assert request["method"] == "PATCH"
+    assert request["json"] == {"target_price_cents": 1234}
+    assert isinstance(request["headers"]["Idempotency-Key"], str)
+    with pytest.raises(ValueError):
+        await client.async_set_target_price("watch-1", -1)
+    with pytest.raises(ValueError):
+        await client.async_set_target_price("watch-1", True)
 
 
 async def test_action_key_format_is_bounded():

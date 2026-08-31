@@ -23,11 +23,14 @@ from .const import (
     IDEMPOTENCY_KEY,
     DATA_CLIENTS,
     DATA_COORDINATORS,
+    DATA_IMAGE_PROXIES,
     DOMAIN,
     SERVICE_CHECK_ALL,
     SERVICE_CHECK_WATCH,
     SERVICE_ADD_TO_SHOPPING_LIST,
     SERVICE_SET_ENABLED,
+    SERVICE_SET_TARGET_PRICE,
+    SERVICE_RELOAD_IMAGE,
     SHOPPING_LIST_ADD_ITEM,
     SHOPPING_LIST_DOMAIN,
     SHOPPING_LIST_ITEM_NAME,
@@ -38,6 +41,12 @@ from .observability import log_failure, log_service_failure, log_success
 _IDEMPOTENCY_KEY_SCHEMA = vol.All(
     str, vol.Match(r"^[A-Za-z0-9._: -]{1,128}$")
 )
+
+
+def _non_negative_cents(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise vol.Invalid("target_price_cents must be a non-negative integer")
+    return value
 
 
 def _action_schema(fields: dict[object, object]) -> vol.Schema:
@@ -80,6 +89,27 @@ def async_register_services(hass: HomeAssistant) -> None:
                 }
             ),
         )
+    if not hass.services.has_service(DOMAIN, SERVICE_SET_TARGET_PRICE):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_SET_TARGET_PRICE,
+            partial(_async_set_target_price, hass),
+            schema=vol.Schema(
+                {
+                    vol.Required(ATTR_WATCH_ID): vol.All(str, vol.Length(min=1)),
+                    vol.Required("target_price_cents"): _non_negative_cents,
+                }
+            ),
+        )
+    if not hass.services.has_service(DOMAIN, SERVICE_RELOAD_IMAGE):
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_RELOAD_IMAGE,
+            partial(_async_reload_image, hass),
+            schema=vol.Schema(
+                {vol.Required(ATTR_WATCH_ID): vol.All(str, vol.Length(min=1))}
+            ),
+        )
     if (
         hass.services.has_service(SHOPPING_LIST_DOMAIN, SHOPPING_LIST_ADD_ITEM)
         and not hass.services.has_service(DOMAIN, SERVICE_ADD_TO_SHOPPING_LIST)
@@ -100,6 +130,8 @@ def async_unregister_services(hass: HomeAssistant) -> None:
         SERVICE_CHECK_ALL,
         SERVICE_CHECK_WATCH,
         SERVICE_SET_ENABLED,
+        SERVICE_SET_TARGET_PRICE,
+        SERVICE_RELOAD_IMAGE,
         SERVICE_ADD_TO_SHOPPING_LIST,
     ):
         if hass.services.has_service(DOMAIN, service):
@@ -211,6 +243,69 @@ async def _async_set_enabled(hass: HomeAssistant, call: ServiceCall) -> None:
         raise HomeAssistantError("Price Watch service rejected the request") from err
     await coordinator.async_request_refresh()
     log_success(operation, route, watch_id=watch_id, request_id=request_id)
+
+
+async def _async_set_target_price(hass: HomeAssistant, call: ServiceCall) -> None:
+    """Set one watch target without checking retailers or creating events."""
+    client, coordinator = _runtime(hass)
+    watch_id = call.data[ATTR_WATCH_ID]
+    request_id = str(uuid4())
+    try:
+        await client.async_set_target_price(
+            watch_id,
+            call.data["target_price_cents"],
+            request_id=request_id,
+        )
+    except (
+        PriceWatchAuthenticationError,
+        PriceWatchTimeoutError,
+        PriceWatchTransportError,
+        PriceWatchInvalidResponseError,
+        PriceWatchApiResponseError,
+        ValueError,
+    ) as err:
+        log_failure(
+            SERVICE_SET_TARGET_PRICE,
+            "/v1/watches/{watch_id}",
+            err,
+            watch_id=watch_id,
+            request_id=request_id,
+        )
+        raise HomeAssistantError("Price Watch could not update the target price") from err
+    await coordinator.async_request_refresh()
+    log_success(
+        SERVICE_SET_TARGET_PRICE,
+        "/v1/watches/{watch_id}",
+        watch_id=watch_id,
+        request_id=request_id,
+    )
+
+
+async def _async_reload_image(hass: HomeAssistant, call: ServiceCall) -> None:
+    """Clear one HA image cache and request a same-source image refresh."""
+    _, coordinator = _runtime(hass)
+    watch_id = call.data[ATTR_WATCH_ID]
+    image_proxies = hass.data.get(DOMAIN, {}).get(DATA_IMAGE_PROXIES, {})
+    image_cache = image_proxies.get(coordinator.entry_id)
+    if image_cache is None:
+        log_service_failure(
+            SERVICE_RELOAD_IMAGE,
+            "home_assistant_image_cache",
+            failure="invalid_response",
+            watch_id=watch_id,
+            service_code="image_cache_unavailable",
+        )
+        raise HomeAssistantError("Price Watch image cache is unavailable")
+    if not await image_cache.async_reload_image(watch_id):
+        log_service_failure(
+            SERVICE_RELOAD_IMAGE,
+            "home_assistant_image_cache",
+            failure="api_response",
+            watch_id=watch_id,
+            service_code="watch_image_unavailable",
+        )
+        raise HomeAssistantError("Price Watch watch image is unavailable")
+    log_success(SERVICE_RELOAD_IMAGE, "home_assistant_image_cache", watch_id=watch_id)
 
 
 async def _async_add_to_shopping_list(

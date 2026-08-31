@@ -27,6 +27,7 @@ from custom_components.price_watch.const import (
     DATA_IMAGE_MANAGERS,
     DATA_IMAGE_PROXIES,
     DOMAIN,
+    SERVICE_RELOAD_IMAGE,
 )
 from custom_components.price_watch.coordinator import PriceWatchCoordinatorData
 
@@ -181,6 +182,9 @@ async def test_ha_standard_image_proxy_accepts_its_managed_token(
     state = hass.states.get(image_entity_id)
     assert state is not None
     picture_url = state.attributes["entity_picture"]
+    assert state.attributes["image_status"] == "unavailable"
+    assert state.attributes["image_last_updated"]
+    assert set(state.attributes) >= {"image_status", "image_last_updated"}
 
     assert picture_url.startswith(f"/api/image_proxy/{image_entity_id}?token=")
     assert "/api/price_watch/image/" not in picture_url
@@ -277,6 +281,102 @@ async def test_ha_image_proxy_returns_safe_upstream_failure(hass, hass_client, c
     assert _CAPABILITY_URL not in await response.text()
     assert _CAPABILITY_TOKEN not in caplog.text
     assert "price-watch.test" not in caplog.text
+    await _unload_entry(hass, entry)
+
+
+async def test_reload_image_invalidates_one_watch_and_refreshes_image_proxy(hass, hass_client_no_auth):
+    """Reloads one cache entry without checking or changing service state."""
+    entry = await _setup_entry(hass, (_watch(),))
+    image_cache = hass.data[DOMAIN][DATA_IMAGE_PROXIES][entry.entry_id]
+    client = hass.data[DOMAIN][DATA_CLIENTS][entry.entry_id]
+    client.async_get_product_image = AsyncMock(
+        side_effect=(
+            PriceWatchProductImage(b"first", "image/jpeg"),
+            PriceWatchProductImage(b"second", "image/jpeg"),
+        )
+    )
+    image_entity_id = _image_entity_id(hass)
+    picture_url = hass.states.get(image_entity_id).attributes["entity_picture"]
+    web_client = await hass_client_no_auth()
+
+    first = await web_client.get(picture_url)
+    assert first.status == 200
+    assert await first.read() == b"first"
+    before = hass.states.get(image_entity_id)
+    assert before is not None
+    before_updated = before.attributes["image_last_updated"]
+    observations_before = hass.data[DOMAIN][DATA_COORDINATORS][entry.entry_id].data.watches[0].current_observation_id
+
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_RELOAD_IMAGE,
+        {"watch_id": "watch-one"},
+        blocking=True,
+    )
+    await hass.async_block_till_done()
+    after = hass.states.get(image_entity_id)
+    assert after is not None
+    assert after.attributes["image_last_updated"] != before_updated
+    assert after.attributes["image_status"] == "refresh_requested"
+
+    second = await web_client.get(picture_url)
+    assert second.status == 200
+    assert await second.read() == b"second"
+    assert client.async_get_product_image.await_count == 2
+    assert hass.data[DOMAIN][DATA_COORDINATORS][entry.entry_id].data.watches[0].current_observation_id == observations_before
+    await _unload_entry(hass, entry)
+
+
+async def test_reload_image_failure_preserves_prior_image_without_check(hass):
+    """A failed same-source reload retains prior bytes and service state."""
+    entry = await _setup_entry(hass, (_watch(),))
+    image_cache = hass.data[DOMAIN][DATA_IMAGE_PROXIES][entry.entry_id]
+    client = hass.data[DOMAIN][DATA_CLIENTS][entry.entry_id]
+    check_watch = AsyncMock()
+    client.async_check_watch = check_watch
+    client.async_get_product_image = AsyncMock(
+        side_effect=(PriceWatchProductImage(b"first", "image/jpeg"), PriceWatchTransportError)
+    )
+    assert (
+        await image_cache.async_get_image("watch-one", request_id="a" * 36)
+    ).content == b"first"
+    before_updated = hass.states.get(_image_entity_id(hass)).attributes[
+        "image_last_updated"
+    ]
+
+    with pytest.raises(Exception):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_RELOAD_IMAGE,
+            {"watch_id": "watch-one"},
+            blocking=True,
+        )
+
+    assert (
+        await image_cache.async_get_image("watch-one", request_id="b" * 36)
+    ).content == b"first"
+    assert (
+        hass.states.get(_image_entity_id(hass)).attributes["image_last_updated"]
+        == before_updated
+    )
+    check_watch.assert_not_awaited()
+    await _unload_entry(hass, entry)
+
+
+async def test_reload_image_failure_has_no_check_or_observation_side_effect(hass):
+    """An unknown watch reload fails without invoking the API or changing state."""
+    entry = await _setup_entry(hass, (_watch(),))
+    client = hass.data[DOMAIN][DATA_CLIENTS][entry.entry_id]
+    check_watch = AsyncMock()
+    client.async_check_watch = check_watch
+    with pytest.raises(Exception):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_RELOAD_IMAGE,
+            {"watch_id": "missing-watch"},
+            blocking=True,
+        )
+    check_watch.assert_not_awaited()
     await _unload_entry(hass, entry)
 
 

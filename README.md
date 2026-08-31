@@ -43,6 +43,8 @@ The token is stored in the Home Assistant config entry. It is not placed in YAML
 - Refresh and enable/disable watch actions
 - Stable per-retailer devices and entities for operational status, strategy control, and diagnostics
 - Shopping List support when that Home Assistant capability is available
+- Per-watch enabled switch and target-price control
+- Local image reload action for one watch
 
 The integration only calls the configured Price Watch API. It does not scrape retailer sites, access the service database, or expose the service token to a dashboard card.
 
@@ -79,7 +81,18 @@ an App image capability token.
 The primary current-price sensor exposes the associated Home Assistant image
 entity ID when that entity is registered. Lovelace cards can use this entity
 association without receiving an image URL or token. If Home Assistant has no
-available image entity, the rest of the watch remains usable.
+available image entity, the rest of the watch remains usable. Safe image
+attributes expose only `image_status` and `image_last_updated`; no token, URL,
+or raw upstream error is exposed.
+
+The `price_watch.reload_image` action invalidates only the selected watch's
+local HA image cache and causes that ImageEntity to refresh the current service
+image for the same URL and observation. It never runs a retailer check or
+creates service observations/events. `price_watch.set_target_price` changes
+only the configured non-negative AUD-cent target; its API idempotency key is
+created internally and it has no observation/event/alert side effect. The
+per-watch `Enabled` switch uses `price_watch.set_enabled` and likewise does not
+run a check.
 
 ## Target-event notifications
 

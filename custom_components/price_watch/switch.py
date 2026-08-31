@@ -18,16 +18,18 @@ from .api import (
     PriceWatchInvalidResponseError,
     PriceWatchTimeoutError,
     PriceWatchTransportError,
+    PriceWatchWatch,
 )
 from .const import (
     DATA_CLIENTS,
     DATA_COORDINATORS,
     DATA_RETAILER_SWITCH_MANAGERS,
+    DATA_WATCH_SWITCH_MANAGERS,
     DOMAIN,
 )
 from .coordinator import PriceWatchCoordinator
 from .observability import log_failure, log_success
-from .sensor import PriceWatchRetailerEntity
+from .sensor import PriceWatchRetailerEntity, PriceWatchWatchEntity
 
 _RETAILER_PATCH_ROUTE = "/v1/retailers/{id}"
 
@@ -43,7 +45,13 @@ async def async_setup_entry(
     hass.data[DOMAIN].setdefault(DATA_RETAILER_SWITCH_MANAGERS, {})[
         entry.entry_id
     ] = manager
-    async_add_entities(manager.add_new_retailer_switches())
+    watch_manager = PriceWatchWatchSwitchManager(coordinator, hass, async_add_entities)
+    hass.data[DOMAIN].setdefault(DATA_WATCH_SWITCH_MANAGERS, {})[
+        entry.entry_id
+    ] = watch_manager
+    async_add_entities(
+        [*manager.add_new_retailer_switches(), *watch_manager.add_new_watch_switches()]
+    )
 
 
 class PriceWatchRetailerEnabledSwitch(PriceWatchRetailerEntity, SwitchEntity):
@@ -106,6 +114,108 @@ class PriceWatchRetailerEnabledSwitch(PriceWatchRetailerEntity, SwitchEntity):
         log_success(
             "retailer_set_enabled", _RETAILER_PATCH_ROUTE, request_id=request_id
         )
+
+
+class PriceWatchWatchEnabledSwitch(PriceWatchWatchEntity, SwitchEntity):
+    """Enable or disable one watch without running a check."""
+
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_has_entity_name = True
+
+    def __init__(
+        self,
+        coordinator: PriceWatchCoordinator,
+        hass: HomeAssistant,
+        watch: PriceWatchWatch,
+    ) -> None:
+        super().__init__(coordinator, watch)
+        self._hass = hass
+        self._attr_unique_id = f"watch_{watch.id}_enabled"
+        self._attr_name = "Enabled"
+
+    @property
+    def is_on(self) -> bool | None:
+        watch = self._watch()
+        return watch.enabled if watch is not None else None
+
+    async def async_turn_on(self, **kwargs: object) -> None:
+        await self._async_set_enabled(True)
+
+    async def async_turn_off(self, **kwargs: object) -> None:
+        await self._async_set_enabled(False)
+
+    async def _async_set_enabled(self, enabled: bool) -> None:
+        client: PriceWatchApiClient = self._hass.data[DOMAIN][DATA_CLIENTS][
+            self.coordinator.entry_id
+        ]
+        request_id = str(uuid4())
+        try:
+            await client.async_set_enabled(
+                self._watch_id,
+                enabled,
+                idempotency_key=str(uuid4()),
+                request_id=request_id,
+            )
+        except (
+            PriceWatchAuthenticationError,
+            PriceWatchTimeoutError,
+            PriceWatchTransportError,
+            PriceWatchInvalidResponseError,
+            PriceWatchApiResponseError,
+        ) as err:
+            log_failure(
+                "watch_set_enabled",
+                "/v1/watches/{watch_id}",
+                err,
+                watch_id=self._watch_id,
+                request_id=request_id,
+            )
+            raise HomeAssistantError("Price Watch could not update watch enabled state") from err
+        await self.coordinator.async_request_refresh()
+        log_success(
+            "watch_set_enabled",
+            "/v1/watches/{watch_id}",
+            watch_id=self._watch_id,
+            request_id=request_id,
+        )
+
+
+class PriceWatchWatchSwitchManager:
+    """Create stable enabled switches for dynamically discovered watches."""
+
+    def __init__(
+        self,
+        coordinator: PriceWatchCoordinator,
+        hass: HomeAssistant,
+        async_add_entities: AddEntitiesCallback,
+    ) -> None:
+        self._coordinator = coordinator
+        self._hass = hass
+        self._async_add_entities = async_add_entities
+        self._watch_ids: set[str] = set()
+        self._unsub = coordinator.async_add_listener(self._handle_coordinator_update)
+
+    def add_new_watch_switches(self) -> list[PriceWatchWatchEnabledSwitch]:
+        if self._coordinator.data is None:
+            return []
+        new_watches = [
+            watch
+            for watch in self._coordinator.data.watches
+            if watch.id not in self._watch_ids
+        ]
+        self._watch_ids.update(watch.id for watch in new_watches)
+        return [
+            PriceWatchWatchEnabledSwitch(self._coordinator, self._hass, watch)
+            for watch in new_watches
+        ]
+
+    def _handle_coordinator_update(self) -> None:
+        switches = self.add_new_watch_switches()
+        if switches:
+            self._async_add_entities(switches)
+
+    def stop(self) -> None:
+        self._unsub()
 
 
 class PriceWatchRetailerSwitchManager:
