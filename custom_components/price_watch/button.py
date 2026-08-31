@@ -70,7 +70,11 @@ class PriceWatchRetailerTestButton(PriceWatchRetailerEntity, ButtonEntity):
         route = f"/v1/retailers/{self._retailer_id}/test"
         request_id = str(uuid4())
         try:
-            await client.async_test_retailer(self._retailer_id, request_id=request_id)
+            await client.async_test_retailer(
+                self._retailer_id,
+                idempotency_key=str(uuid4()),
+                request_id=request_id,
+            )
         except (
             PriceWatchAuthenticationError,
             PriceWatchTimeoutError,
@@ -113,7 +117,11 @@ class PriceWatchRetailerResetButton(PriceWatchRetailerEntity, ButtonEntity):
         route = f"/v1/retailers/{self._retailer_id}/reset"
         request_id = str(uuid4())
         try:
-            await client.async_reset_retailer(self._retailer_id, request_id=request_id)
+            await client.async_reset_retailer(
+                self._retailer_id,
+                idempotency_key=str(uuid4()),
+                request_id=request_id,
+            )
         except (
             PriceWatchAuthenticationError,
             PriceWatchTimeoutError,

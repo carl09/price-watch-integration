@@ -20,6 +20,7 @@ from .api import (
 from .const import (
     ATTR_ENABLED,
     ATTR_WATCH_ID,
+    IDEMPOTENCY_KEY,
     DATA_CLIENTS,
     DATA_COORDINATORS,
     DOMAIN,
@@ -34,19 +35,36 @@ from .const import (
 from .coordinator import PriceWatchCoordinator
 from .observability import log_failure, log_service_failure, log_success
 
+_IDEMPOTENCY_KEY_SCHEMA = vol.All(
+    str, vol.Match(r"^[A-Za-z0-9._: -]{1,128}$")
+)
+
+
+def _action_schema(fields: dict[object, object]) -> vol.Schema:
+    """Allow callers to preserve one action idempotency key."""
+    return vol.Schema(
+        {
+            **fields,
+            vol.Optional(IDEMPOTENCY_KEY): _IDEMPOTENCY_KEY_SCHEMA,
+        }
+    )
+
 
 def async_register_services(hass: HomeAssistant) -> None:
     """Register manual-check actions once for the integration domain."""
     if not hass.services.has_service(DOMAIN, SERVICE_CHECK_ALL):
         hass.services.async_register(
-            DOMAIN, SERVICE_CHECK_ALL, partial(_async_check_all, hass)
+            DOMAIN,
+            SERVICE_CHECK_ALL,
+            partial(_async_check_all, hass),
+            schema=_action_schema({}),
         )
     if not hass.services.has_service(DOMAIN, SERVICE_CHECK_WATCH):
         hass.services.async_register(
             DOMAIN,
             SERVICE_CHECK_WATCH,
             partial(_async_check_watch, hass),
-            schema=vol.Schema(
+            schema=_action_schema(
                 {vol.Required(ATTR_WATCH_ID): vol.All(str, vol.Length(min=1))}
             ),
         )
@@ -55,7 +73,7 @@ def async_register_services(hass: HomeAssistant) -> None:
             DOMAIN,
             SERVICE_SET_ENABLED,
             partial(_async_set_enabled, hass),
-            schema=vol.Schema(
+            schema=_action_schema(
                 {
                     vol.Required(ATTR_WATCH_ID): vol.All(str, vol.Length(min=1)),
                     vol.Required(ATTR_ENABLED): bool,
@@ -70,7 +88,7 @@ def async_register_services(hass: HomeAssistant) -> None:
             DOMAIN,
             SERVICE_ADD_TO_SHOPPING_LIST,
             partial(_async_add_to_shopping_list, hass),
-            schema=vol.Schema(
+            schema=_action_schema(
                 {vol.Required(ATTR_WATCH_ID): vol.All(str, vol.Length(min=1))}
             ),
         )
@@ -108,7 +126,9 @@ async def _async_check_all(hass: HomeAssistant, call: ServiceCall) -> None:
     route = "/v1/checks"
     request_id = str(uuid4())
     try:
-        await client.async_check_all(request_id=request_id)
+        await client.async_check_all(
+            idempotency_key=call.data.get(IDEMPOTENCY_KEY), request_id=request_id
+        )
     except PriceWatchAuthenticationError as err:
         log_failure(operation, route, err, request_id=request_id)
         raise HomeAssistantError("Price Watch authentication failed") from err
@@ -136,7 +156,11 @@ async def _async_check_watch(hass: HomeAssistant, call: ServiceCall) -> None:
     route = "/v1/watches/{watch_id}/check"
     request_id = str(uuid4())
     try:
-        await client.async_check_watch(watch_id, request_id=request_id)
+        await client.async_check_watch(
+            watch_id,
+            idempotency_key=call.data.get(IDEMPOTENCY_KEY),
+            request_id=request_id,
+        )
     except PriceWatchAuthenticationError as err:
         log_failure(operation, route, err, watch_id=watch_id, request_id=request_id)
         raise HomeAssistantError("Price Watch authentication failed") from err
@@ -167,6 +191,7 @@ async def _async_set_enabled(hass: HomeAssistant, call: ServiceCall) -> None:
         await client.async_set_enabled(
             watch_id,
             call.data[ATTR_ENABLED],
+            idempotency_key=call.data.get(IDEMPOTENCY_KEY),
             request_id=request_id,
         )
     except PriceWatchAuthenticationError as err:

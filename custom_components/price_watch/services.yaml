@@ -1,6 +1,13 @@
 check_all:
   name: Check due watches
   description: Request an immediate check for all Price Watch watches that are due.
+  fields:
+    idempotency_key:
+      name: Idempotency key
+      description: Optional key reused for transport retries of this action.
+      required: false
+      selector:
+        text: {}
 check_watch:
   name: Check watch
   description: Request an immediate check for one Price Watch watch.
@@ -10,7 +17,13 @@ check_watch:
       description: Immutable Price Watch watch ID.
       required: true
       selector:
-        text:
+        text: {}
+    idempotency_key:
+      name: Idempotency key
+      description: Optional key reused for transport retries of this action.
+      required: false
+      selector:
+        text: {}
 set_enabled:
   name: Set watch enabled state
   description: Enable or disable one Price Watch watch.
@@ -20,13 +33,19 @@ set_enabled:
       description: Immutable Price Watch watch ID.
       required: true
       selector:
-        text:
+        text: {}
     enabled:
       name: Enabled
       description: Whether Price Watch should schedule checks for this watch.
       required: true
       selector:
-        boolean:
+        boolean: {}
+    idempotency_key:
+      name: Idempotency key
+      description: Optional key reused for transport retries of this action.
+      required: false
+      selector:
+        text: {}
 add_to_shopping_list:
   name: Add watch to Shopping List
   description: Add the current watch details to Home Assistant's Shopping List.
@@ -36,4 +55,10 @@ add_to_shopping_list:
       description: Immutable Price Watch watch ID.
       required: true
       selector:
-        text:
+        text: {}
+    idempotency_key:
+      name: Idempotency key
+      description: Optional key for this explicit action invocation.
+      required: false
+      selector:
+        text: {}

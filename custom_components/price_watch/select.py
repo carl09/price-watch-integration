@@ -87,7 +87,10 @@ class PriceWatchRetailerPreferredStrategySelect(
         request_id = str(uuid4())
         try:
             await client.async_set_retailer_preferred_strategy(
-                self._retailer_id, option, request_id=request_id
+                self._retailer_id,
+                option,
+                idempotency_key=str(uuid4()),
+                request_id=request_id,
             )
         except (
             PriceWatchAuthenticationError,

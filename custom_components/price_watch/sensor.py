@@ -132,7 +132,7 @@ class PriceWatchLatestTargetEventSensor(
                 for event in self.coordinator.data.events
                 if event.type == "target_reached"
             ),
-            key=lambda event: event.occurred_at,
+            key=lambda event: (event.occurred_at, event.id),
             default=None,
         )
 
@@ -352,6 +352,7 @@ class PriceWatchWatchSensor(PriceWatchWatchEntity, SensorEntity):
             "retailer_id": watch.retailer_id,
             "product_url": watch.product_url,
             "retailer_variant_id": watch.variant.retailer_variant_id,
+            "variant_options": watch.variant.options,
             "selected_variant_label": (
                 observation.selected_variant_label if observation is not None else None
             ),
@@ -361,6 +362,14 @@ class PriceWatchWatchSensor(PriceWatchWatchEntity, SensorEntity):
                 observation.checked_at if observation is not None else None
             ),
             "enabled": watch.enabled,
+            "last_attempt_at": watch.last_attempt_at,
+            "last_attempt_status": watch.last_attempt_status,
+            "last_attempt_error_code": (
+                watch.last_attempt_error_code
+                if watch.last_attempt_error_code in _TRUSTED_FAILURE_ERROR_CODES
+                else None
+            ),
+            "last_successful_check_at": watch.last_successful_check_at,
         }
         if observation is not None and observation.compare_at_price_cents is not None:
             attributes["compare_at_price_cents"] = observation.compare_at_price_cents
@@ -425,7 +434,7 @@ class PriceWatchLastCheckedSensor(PriceWatchWatchEntity, SensorEntity):
         """Set a stable last-observation entity identity."""
         super().__init__(coordinator, watch)
         self._attr_unique_id = f"watch_{watch.id}_last_checked"
-        self._attr_name = "Last checked"
+        self._attr_name = "Last valid observation"
         self._set_legacy_entity_id("sensor", f"{watch.title} Last Checked")
 
     @property

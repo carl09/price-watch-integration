@@ -14,6 +14,7 @@ from custom_components.price_watch.api import (
     PriceWatchEvent,
     PriceWatchInvalidResponseError,
     PriceWatchSummary,
+    PriceWatchTransportError,
     PriceWatchVariant,
     PriceWatchWatch,
 )
@@ -22,6 +23,9 @@ from custom_components.price_watch.const import (
     CONF_BASE_URL,
     DATA_COORDINATORS,
     DOMAIN,
+    SERVICE_CHECK_ALL,
+    SERVICE_CHECK_WATCH,
+    SERVICE_SET_ENABLED,
 )
 from custom_components.price_watch.coordinator import PriceWatchCoordinatorData
 
@@ -82,6 +86,8 @@ def _watch(
         ),
         last_successful_check_at="2026-08-22T07:00:00.000Z",
         last_attempt_at="2026-08-22T07:00:00.000Z",
+        last_attempt_status="available",
+        last_attempt_error_code=None,
         product_image_url=product_image_url,
     )
 
@@ -132,6 +138,31 @@ async def _unload_entry(hass, config_entry) -> None:
     """Unload each test entry before the HA harness checks resource cleanup."""
     assert await hass.config_entries.async_unload(config_entry.entry_id)
     await hass.async_block_till_done()
+
+
+async def test_action_services_register_once_after_setup_and_unregister_on_unload(hass):
+    """Action discovery follows successful entry setup and unload cleanup."""
+    entry = await _setup_entry(hass, (_watch("watch-one"),))
+    for service in (SERVICE_CHECK_ALL, SERVICE_CHECK_WATCH, SERVICE_SET_ENABLED):
+        assert hass.services.has_service(DOMAIN, service)
+    await _unload_entry(hass, entry)
+    for service in (SERVICE_CHECK_ALL, SERVICE_CHECK_WATCH, SERVICE_SET_ENABLED):
+        assert not hass.services.has_service(DOMAIN, service)
+
+
+async def test_failed_entry_setup_does_not_register_action_services(hass):
+    """A failed first refresh leaves no callable Price Watch actions."""
+    entry = _entry()
+    entry.add_to_hass(hass)
+    with patch.object(
+        PriceWatchApiClient,
+        "async_get_summary",
+        new=AsyncMock(side_effect=PriceWatchTransportError()),
+    ):
+        assert not await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    for service in (SERVICE_CHECK_ALL, SERVICE_CHECK_WATCH, SERVICE_SET_ENABLED):
+        assert not hass.services.has_service(DOMAIN, service)
 
 
 def _entity_id(entity_registry, platform: str, unique_id: str) -> str:
@@ -298,6 +329,10 @@ async def test_disabled_watch_retains_its_device_and_safe_primary_attributes(has
     assert state is not None
     assert state.attributes["enabled"] is False
     assert state.attributes["retailer_variant_id"] == "48573064806635"
+    assert state.attributes["variant_options"] == {"Colour": "Canyon", "Size": "XS"}
+    assert state.attributes["last_attempt_status"] == "available"
+    assert state.attributes["last_attempt_at"] == "2026-08-22T07:00:00.000Z"
+    assert state.attributes["last_successful_check_at"] == "2026-08-22T07:00:00.000Z"
     assert "redacted-test-token" not in str(state.attributes)
     await _unload_entry(hass, entry)
 
@@ -312,7 +347,7 @@ async def test_watch_entities_keep_legacy_ids_and_use_concise_names(hass):
         ("sensor", "watch_watch-one", "Current price"),
         ("sensor", "watch_watch-one_target_price", "Target price"),
         ("sensor", "watch_watch-one_status", "Status"),
-        ("sensor", "watch_watch-one_last_checked", "Last checked"),
+        ("sensor", "watch_watch-one_last_checked", "Last valid observation"),
         ("binary_sensor", "watch_watch-one_target_match", "Target match"),
     )
     for platform, unique_id, name in expected_entities:

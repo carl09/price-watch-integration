@@ -197,21 +197,28 @@ async def test_coordinator_logs_each_route_with_its_request_id(hass, caplog):
 
     await coordinator._async_update_data()
 
-    requests = (
-        ("/v1/summary", client.async_get_summary),
-        ("/v1/watches", client.async_get_watches),
-        ("/v1/events", client.async_get_events),
-        ("/v1/retailers", client.async_get_retailers),
+    routes = (
+        "/v1/summary",
+        "/v1/watches",
+        "/v1/events?type=target_reached&limit=1",
+        "/v1/events?type=check_failed&limit=1",
+        "/v1/retailers",
     )
     request_ids = [
-        method.await_args.kwargs["request_id"] for _, method in requests
+        client.async_get_summary.await_args.kwargs["request_id"],
+        client.async_get_watches.await_args.kwargs["request_id"],
+        *[
+            call.kwargs["request_id"]
+            for call in client.async_get_events.await_args_list
+        ],
+        client.async_get_retailers.await_args.kwargs["request_id"],
     ]
     assert len(set(request_ids)) == len(request_ids)
     logs = "\n".join(_messages(caplog))
-    for route, request_id in requests:
+    for route, request_id in zip(routes, request_ids, strict=True):
         assert (
             f"operation=coordinator_refresh route={route} "
-            f"outcome=succeeded request_id={request_id.await_args.kwargs['request_id']}"
+            f"outcome=succeeded request_id={request_id}"
         ) in logs
 
 

@@ -47,9 +47,12 @@ name, or selected variant cannot create a second device.
 
 The existing current-price sensor remains the primary entity with its current
 entity and unique IDs. The device also groups target price, target match,
-current status, and last-observation timestamp entities. Selected variant,
-retailer variant ID, product URL, raw error code, and related low-level facts
-remain safe attributes of the primary price sensor. Enabled remains a primary
+current status, and last-valid-observation timestamp entities. The primary
+sensor also exposes latest-attempt timestamp/status/error separately. Selected
+variant, retailer variant ID, product URL, and safe allow-listed error codes
+remain safe attributes of the primary price sensor. Watch attempt statuses are
+`available`, `out_of_stock`, `unavailable`, `check_failed`, `rate_limited`, or
+`blocked`; failed attempts never replace the last valid observation. Enabled remains a primary
 sensor attribute; use the existing `price_watch.set_enabled` action to change
 it.
 
@@ -74,9 +77,9 @@ available image entity, the rest of the watch remains usable.
 ## Target-event notifications
 
 `sensor.price_watch_latest_target_event` exposes the immutable ID of the most
-recent service-produced `target_reached` event. It is `unknown` when no such
-event has been received by Home Assistant, `none` when the service has no such
-event, and unavailable while Home Assistant cannot refresh Price Watch.
+recent service-produced `target_reached` event. After a successful refresh it is
+`none` when the service has no such event, and unavailable while Home Assistant
+cannot refresh Price Watch.
 
 Its safe attributes are `watch_id`, `occurred_at`, `deduplication_key`,
 `event_type`, and (when supplied by the service) `target_price_cents`. Use a

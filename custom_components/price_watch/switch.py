@@ -81,7 +81,10 @@ class PriceWatchRetailerEnabledSwitch(PriceWatchRetailerEntity, SwitchEntity):
         request_id = str(uuid4())
         try:
             await client.async_set_retailer_enabled(
-                self._retailer_id, enabled, request_id=request_id
+                self._retailer_id,
+                enabled,
+                idempotency_key=str(uuid4()),
+                request_id=request_id,
             )
         except (
             PriceWatchAuthenticationError,

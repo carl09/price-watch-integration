@@ -27,6 +27,7 @@ CHECKS_PATH = "/v1/checks"
 RETAILERS_PATH = "/v1/retailers"
 REQUEST_TIMEOUT_SECONDS = 10
 REQUEST_ID_HEADER = "request-id"
+IDEMPOTENCY_KEY = "idempotency_key"
 SERVICE_CHECK_ALL = "check_all"
 SERVICE_CHECK_WATCH = "check_watch"
 SERVICE_SET_ENABLED = "set_enabled"

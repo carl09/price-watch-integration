@@ -83,13 +83,21 @@ class PriceWatchCoordinator(DataUpdateCoordinator[PriceWatchCoordinatorData]):
                     request_id=request_id
                 ),
             )
-            events = await self._async_fetch(
+            target_events = await self._async_fetch(
                 operation,
-                "/v1/events",
+                "/v1/events?type=target_reached&limit=1",
                 lambda request_id: self._client.async_get_events(
-                    request_id=request_id
+                    event_type="target_reached", limit=1, request_id=request_id
                 ),
             )
+            failure_events = await self._async_fetch(
+                operation,
+                "/v1/events?type=check_failed&limit=1",
+                lambda request_id: self._client.async_get_events(
+                    event_type="check_failed", limit=1, request_id=request_id
+                ),
+            )
+            events = tuple(target_events) + tuple(failure_events)
             retailers = await self._async_fetch(
                 operation,
                 "/v1/retailers",
