@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from unittest.mock import AsyncMock
 
 import pytest
@@ -116,6 +117,51 @@ async def test_watch_retrieval_follows_five_pages_and_requests_100_per_page():
         "https://price-watch.test/v1/watches?limit=100",
         "https://price-watch.test/v1/watches?limit=100&cursor=cursor-1",
     ]
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement", "expected_path", "expected_reason"),
+    (
+        (
+            "product_image_url",
+            "https://evil.example/image?token=secret-token",
+            "data[*].product_image_url",
+            "unsafe_url",
+        ),
+        ("variant", {}, "data[*].variant", "selector_required"),
+        (
+            "current_observation",
+            {"id": "observation-one"},
+            "data[*].current_observation.checked_at",
+            "required_non_empty_string",
+        ),
+    ),
+)
+async def test_watch_parser_reports_bounded_safe_field_diagnostics(
+    field, replacement, expected_path, expected_reason
+):
+    payload = _watch("watch-one")
+    payload[field] = deepcopy(replacement)
+    client = PriceWatchApiClient("https://price-watch.test", "token", AsyncMock())
+
+    with pytest.raises(PriceWatchInvalidResponseError) as caught:
+        client._parse_watch(payload)
+
+    assert caught.value.field_path == expected_path
+    assert caught.value.reason == expected_reason
+    assert "secret-token" not in str(caught.value)
+
+
+async def test_watch_retrieval_reports_safe_generic_payload_diagnostic():
+    client = PriceWatchApiClient(
+        "https://price-watch.test", "token", _Session([{"data": "not-a-list"}])
+    )
+
+    with pytest.raises(PriceWatchInvalidResponseError) as caught:
+        await client.async_get_watches()
+
+    assert caught.value.field_path == "data"
+    assert caught.value.reason == "expected_list"
 
 
 async def test_watch_retrieval_fails_closed_on_a_sixth_page():

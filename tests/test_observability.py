@@ -123,6 +123,22 @@ def _assert_no_sensitive_values(caplog) -> None:
     assert _RETAILER_URL not in logs
 
 
+async def test_invalid_response_logs_safe_field_metadata_without_payload_values(caplog):
+    error = PriceWatchInvalidResponseError(
+        _IMAGE_CAPABILITY_URL,
+        field_path="data[*].product_image_url",
+        reason="unsafe_url",
+    )
+    caplog.set_level(logging.WARNING, logger=_LOGGER_NAME)
+
+    log_failure("coordinator_refresh", "/v1/watches", error, request_id=_REQUEST_ID)
+
+    logs = "\n".join(_messages(caplog))
+    assert "invalid_field=data[*].product_image_url" in logs
+    assert "invalid_reason=unsafe_url" in logs
+    _assert_no_sensitive_values(caplog)
+
+
 async def test_coordinator_logs_each_failure_classification_without_secrets(
     hass, caplog
 ):

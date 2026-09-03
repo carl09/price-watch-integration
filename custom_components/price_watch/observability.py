@@ -60,6 +60,14 @@ def log_failure(
         watch_id=watch_id,
         http_status=http_status,
         service_code=service_code or error_service_code,
+        invalid_field=(
+            error.field_path
+            if isinstance(error, PriceWatchInvalidResponseError)
+            else None
+        ),
+        invalid_reason=(
+            error.reason if isinstance(error, PriceWatchInvalidResponseError) else None
+        ),
         request_id=request_id,
     )
 
@@ -71,6 +79,8 @@ def log_service_failure(
     failure: str,
     watch_id: str | None = None,
     service_code: str | None = None,
+    invalid_field: str | None = None,
+    invalid_reason: str | None = None,
     request_id: str | None = None,
 ) -> None:
     """Log a safe local Home Assistant service failure."""
@@ -82,6 +92,8 @@ def log_service_failure(
         failure=failure,
         watch_id=watch_id,
         service_code=service_code,
+        invalid_field=invalid_field,
+        invalid_reason=invalid_reason,
         request_id=request_id,
     )
 
@@ -110,6 +122,8 @@ def _log(
     watch_id: str | None = None,
     http_status: int | None = None,
     service_code: str | None = None,
+    invalid_field: str | None = None,
+    invalid_reason: str | None = None,
     request_id: str | None = None,
 ) -> None:
     fields = [
@@ -125,6 +139,16 @@ def _log(
         fields.append(f"request_id={request_id}")
     if http_status is not None and 100 <= http_status <= 599:
         fields.append(f"http_status={http_status}")
+    if (
+        invalid_field is not None
+        and re.fullmatch(r"[A-Za-z0-9_*.[\]-]{1,128}", invalid_field)
+    ):
+        fields.append(f"invalid_field={invalid_field}")
+    if (
+        invalid_reason is not None
+        and re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", invalid_reason)
+    ):
+        fields.append(f"invalid_reason={invalid_reason}")
     if (
         service_code is not None
         and _SAFE_SERVICE_CODE.fullmatch(service_code)

@@ -6,7 +6,7 @@ import asyncio
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, NoReturn
 from urllib.parse import parse_qsl, quote, urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
@@ -79,8 +79,30 @@ class PriceWatchTimeoutError(PriceWatchApiError):
     """The service did not respond before the request deadline."""
 
 
+_SAFE_INVALID_FIELD = re.compile(r"^[A-Za-z0-9_*.[\]-]{1,128}$")
+_SAFE_INVALID_REASON = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
+
+
 class PriceWatchInvalidResponseError(PriceWatchApiError):
-    """The service returned an unexpected health response."""
+    """The service returned an unexpected response shape."""
+
+    def __init__(
+        self,
+        message: str | None = None,
+        *,
+        field_path: str | None = None,
+        reason: str | None = None,
+    ) -> None:
+        if message is None:
+            super().__init__()
+        else:
+            super().__init__(message)
+        self.field_path = (
+            field_path if field_path and _SAFE_INVALID_FIELD.fullmatch(field_path) else None
+        )
+        self.reason = (
+            reason if reason and _SAFE_INVALID_REASON.fullmatch(reason) else None
+        )
 
 
 class PriceWatchApiResponseError(PriceWatchApiError):
@@ -327,6 +349,10 @@ async def _read_bounded_json(response: aiohttp.ClientResponse) -> object:
         raise PriceWatchInvalidResponseError("non-JSON response") from err
 
 
+def _invalid_response(field_path: str, reason: str) -> NoReturn:
+    raise PriceWatchInvalidResponseError(field_path=field_path, reason=reason)
+
+
 def _trusted_service_code(value: object) -> str | None:
     """Return only expected machine-readable service codes."""
     return value if isinstance(value, str) and value in _TRUSTED_SERVICE_CODES else None
@@ -443,18 +469,18 @@ class PriceWatchApiClient:
                 path += f"&cursor={quote(cursor, safe='')}"
             payload = await self._async_get_json(path, request_id=request_id)
             if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
-                raise PriceWatchInvalidResponseError
+                _invalid_response("data", "expected_list")
             page_data = payload["data"]
             if len(page_data) > 100:
-                raise PriceWatchInvalidResponseError
+                _invalid_response("data", "too_many_items")
             watches.extend(self._parse_watch(item) for item in page_data)
             next_cursor = payload.get("next_cursor")
             if next_cursor is None:
                 return tuple(watches)
             if not isinstance(next_cursor, str) or not next_cursor:
-                raise PriceWatchInvalidResponseError
+                _invalid_response("next_cursor", "expected_non_empty_string")
             cursor = next_cursor
-        raise PriceWatchInvalidResponseError
+        _invalid_response("data", "pagination_limit_exceeded")
 
     async def async_get_events(
         self,
@@ -908,22 +934,25 @@ class PriceWatchApiClient:
 
     def _parse_watch(self, value: object) -> PriceWatchWatch:
         if not isinstance(value, dict):
-            raise PriceWatchInvalidResponseError
+            _invalid_response("data[*]", "expected_object")
         required_strings = ("id", "retailer_id", "product_url", "title")
-        if any(not isinstance(value.get(key), str) or not value[key] for key in required_strings):
-            raise PriceWatchInvalidResponseError
-        self._parse_product_url(value["product_url"])
+        for key in required_strings:
+            if not isinstance(value.get(key), str) or not value[key]:
+                _invalid_response(f"data[*].{key}", "required_non_empty_string")
+        self._parse_product_url(value["product_url"], "data[*].product_url")
         if not isinstance(value.get("enabled"), bool):
-            raise PriceWatchInvalidResponseError
+            _invalid_response("data[*].enabled", "expected_boolean")
         variant = value.get("variant")
         if not isinstance(variant, dict):
-            raise PriceWatchInvalidResponseError
+            _invalid_response("data[*].variant", "expected_object")
         retailer_variant_id = variant.get("retailer_variant_id")
         options = variant.get("options")
         if retailer_variant_id is not None and (
             not isinstance(retailer_variant_id, str) or not retailer_variant_id
         ):
-            raise PriceWatchInvalidResponseError
+            _invalid_response(
+                "data[*].variant.retailer_variant_id", "expected_non_empty_string"
+            )
         if options is not None and (
             not isinstance(options, dict)
             or not options
@@ -935,39 +964,37 @@ class PriceWatchApiClient:
                 for key, option in options.items()
             )
         ):
-            raise PriceWatchInvalidResponseError
+            _invalid_response("data[*].variant.options", "expected_non_empty_string_map")
         if retailer_variant_id is None and options is None:
-            raise PriceWatchInvalidResponseError
+            _invalid_response("data[*].variant", "selector_required")
         interval = value.get("check_interval_minutes")
         if not isinstance(interval, int) or interval <= 0:
-            raise PriceWatchInvalidResponseError
+            _invalid_response("data[*].check_interval_minutes", "expected_positive_integer")
         target = value.get("target_price_cents")
         if target is not None and (not isinstance(target, int) or target < 0):
-            raise PriceWatchInvalidResponseError
+            _invalid_response("data[*].target_price_cents", "expected_non_negative_integer")
         optional_strings = (
             "current_observation_id",
             "last_successful_check_at",
             "last_attempt_at",
             "last_attempt_error_code",
         )
-        if any(
-            value.get(key) is not None and not isinstance(value.get(key), str)
-            for key in optional_strings
-        ):
-            raise PriceWatchInvalidResponseError
+        for key in optional_strings:
+            if value.get(key) is not None and not isinstance(value.get(key), str):
+                _invalid_response(f"data[*].{key}", "expected_string")
         if "current_observation" not in value:
-            raise PriceWatchInvalidResponseError
+            _invalid_response("data[*].current_observation", "required")
         product_image_url = self._parse_product_image_url(
             value.get("product_image_url"), expected_watch_id=value["id"]
         )
         product_image_retry_available = value.get("product_image_retry_available")
         if not isinstance(product_image_retry_available, bool):
-            raise PriceWatchInvalidResponseError
+            _invalid_response("data[*].product_image_retry_available", "expected_boolean")
         if product_image_retry_available and product_image_url is None:
-            raise PriceWatchInvalidResponseError
+            _invalid_response("data[*].product_image_retry_available", "image_url_required")
         last_attempt_status = value.get("last_attempt_status")
         if last_attempt_status is not None and last_attempt_status not in _WATCH_STATUSES:
-            raise PriceWatchInvalidResponseError
+            _invalid_response("data[*].last_attempt_status", "unsupported_value")
         return PriceWatchWatch(
             id=value["id"],
             retailer_id=value["retailer_id"],
@@ -982,7 +1009,7 @@ class PriceWatchApiClient:
             check_interval_minutes=interval,
             current_observation_id=value.get("current_observation_id"),
             current_observation=PriceWatchApiClient._parse_current_observation(
-                value["current_observation"]
+                value["current_observation"], field_path="data[*].current_observation"
             ),
             last_successful_check_at=value.get("last_successful_check_at"),
             last_attempt_at=value.get("last_attempt_at"),
@@ -993,21 +1020,21 @@ class PriceWatchApiClient:
         )
 
     @staticmethod
-    def _parse_product_url(value: object) -> str:
+    def _parse_product_url(value: object, field_path: str = "product_url") -> str:
         """Accept only absolute HTTPS product URLs without credentials."""
         if not isinstance(value, str):
-            raise PriceWatchInvalidResponseError
+            _invalid_response(field_path, "expected_string")
         try:
             parsed = urlsplit(value)
-        except ValueError as err:
-            raise PriceWatchInvalidResponseError from err
+        except ValueError:
+            _invalid_response(field_path, "malformed_url")
         if (
             parsed.scheme != "https"
             or not parsed.hostname
             or parsed.username
             or parsed.password
         ):
-            raise PriceWatchInvalidResponseError
+            _invalid_response(field_path, "unsafe_url")
         return value
 
     def _parse_product_image_url(
@@ -1017,9 +1044,9 @@ class PriceWatchApiClient:
         if value is None:
             return None
         if not isinstance(value, str) or not value:
-            raise PriceWatchInvalidResponseError
+            _invalid_response("data[*].product_image_url", "expected_non_empty_string")
         if not re.fullmatch(r"[A-Za-z0-9_-]+", expected_watch_id):
-            raise PriceWatchInvalidResponseError
+            _invalid_response("data[*].id", "unsafe_identifier")
 
         try:
             image_url = urlsplit(value)
@@ -1037,12 +1064,12 @@ class PriceWatchApiClient:
                 or image_url.hostname != base_url.hostname
                 or image_url.port != base_url.port
             ):
-                raise PriceWatchInvalidResponseError
+                _invalid_response("data[*].product_image_url", "unsafe_url")
             base_path = base_url.path.rstrip("/")
             route_path = f"/v1/watches/{expected_watch_id}/image"
             expected_path = f"{base_path}{route_path}" if base_path else route_path
             if image_url.path != expected_path:
-                raise PriceWatchInvalidResponseError
+                _invalid_response("data[*].product_image_url", "unexpected_path")
             return self._parse_relative_product_image_url(
                 urlsplit(
                     urlunsplit(("", "", route_path, image_url.query, ""))
@@ -1050,8 +1077,8 @@ class PriceWatchApiClient:
                 base_url,
                 expected_watch_id,
             )
-        except ValueError as err:
-            raise PriceWatchInvalidResponseError from err
+        except ValueError:
+            _invalid_response("data[*].product_image_url", "malformed_url")
 
     def _product_image_watch_id(self, value: object) -> str | None:
         """Extract the route watch ID so direct image fetches get the same guard."""
@@ -1074,18 +1101,19 @@ class PriceWatchApiClient:
         image_url, base_url, expected_watch_id: str
     ) -> str:
         """Resolve one exact relative image capability route."""
+        field_path = "data[*].product_image_url"
         if image_url.fragment or image_url.path != f"/v1/watches/{expected_watch_id}/image":
-            raise PriceWatchInvalidResponseError
+            _invalid_response(field_path, "unexpected_path")
         try:
             query = parse_qsl(
                 image_url.query, keep_blank_values=True, strict_parsing=True
             )
-        except ValueError as err:
-            raise PriceWatchInvalidResponseError from err
+        except ValueError:
+            _invalid_response(field_path, "malformed_query")
         if len(query) != 1 or query[0][0] != "token" or not re.fullmatch(
             r"[A-Za-z0-9_-]{43}", query[0][1]
         ):
-            raise PriceWatchInvalidResponseError
+            _invalid_response(field_path, "invalid_capability_token")
         base_path = base_url.path.rstrip("/")
         return urlunsplit(
             (
@@ -1099,40 +1127,35 @@ class PriceWatchApiClient:
 
     @staticmethod
     def _parse_current_observation(
-        value: object,
+        value: object, *, field_path: str = "current_observation"
     ) -> PriceWatchCurrentObservation | None:
         if value is None:
             return None
         if not isinstance(value, dict):
-            raise PriceWatchInvalidResponseError
+            _invalid_response(field_path, "expected_object")
         required_strings = ("id", "checked_at", "status", "currency")
-        if any(
-            not isinstance(value.get(key), str) or not value[key]
-            for key in required_strings
-        ):
-            raise PriceWatchInvalidResponseError
+        for key in required_strings:
+            if not isinstance(value.get(key), str) or not value[key]:
+                _invalid_response(f"{field_path}.{key}", "required_non_empty_string")
         if value["status"] not in {"available", "out_of_stock"}:
-            raise PriceWatchInvalidResponseError
+            _invalid_response(f"{field_path}.status", "unsupported_value")
         optional_money = ("price_cents", "compare_at_price_cents")
-        if any(key not in value for key in optional_money):
-            raise PriceWatchInvalidResponseError
-        if any(
-            value.get(key) is not None
-            and (not isinstance(value[key], int) or value[key] < 0)
-            for key in optional_money
-        ):
-            raise PriceWatchInvalidResponseError
+        for key in optional_money:
+            if key not in value:
+                _invalid_response(f"{field_path}.{key}", "required")
+            if value.get(key) is not None and (
+                not isinstance(value[key], int) or value[key] < 0
+            ):
+                _invalid_response(f"{field_path}.{key}", "expected_non_negative_integer")
         optional_strings = ("selected_variant_label", "error_code")
-        if any(
-            value.get(key) is not None and not isinstance(value[key], str)
-            for key in optional_strings
-        ):
-            raise PriceWatchInvalidResponseError
+        for key in optional_strings:
+            if value.get(key) is not None and not isinstance(value[key], str):
+                _invalid_response(f"{field_path}.{key}", "expected_string")
         if value["status"] == "out_of_stock" and (
             value.get("price_cents") is not None
             or value.get("compare_at_price_cents") is not None
         ):
-            raise PriceWatchInvalidResponseError
+            _invalid_response(f"{field_path}.status", "out_of_stock_must_not_have_price")
         return PriceWatchCurrentObservation(
             id=value["id"],
             checked_at=value["checked_at"],
