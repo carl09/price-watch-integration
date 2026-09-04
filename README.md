@@ -44,8 +44,17 @@ The token is stored in the Home Assistant config entry. It is not placed in YAML
 - Stable per-retailer devices and entities for operational status, strategy control, and diagnostics
 - Shopping List support when that Home Assistant capability is available
 - Per-watch enabled switch and target-price control
-- Per-watch full product check and server-side product-image retry buttons
 - Local image reload action for one watch (unchanged; it only reloads Home Assistant's image cache)
+- Per-retailer **Test retailer** and **Reset acquisition state** buttons remain available
+
+The obsolete per-watch action buttons are removed by the integration action
+cleanup. Use the retained `price_watch.check_watch` and `price_watch.check_all`
+services for checks; the corresponding core API routes and existing service
+behavior remain available. Removing the obsolete registry records also removes
+their entity-specific customizations, such as renamed entity IDs, names/icons,
+disabled state, or area assignment. Dashboards and automations that reference
+those entities must be manually replaced or removed; the integration does not
+rewrite them.
 
 The integration only calls the configured Price Watch API. It does not scrape retailer sites, access the service database, or expose the service token to a dashboard card.
 
@@ -87,19 +96,6 @@ association without receiving an image URL or token. If Home Assistant has no
 available image entity, the rest of the watch remains usable. Safe image
 attributes expose only `image_status` and `image_last_updated`; no token, URL,
 or raw upstream error is exposed.
-
-Each watch device also exposes **Check product** and **Retry product image**
-buttons. **Check product** calls the existing authenticated watch-check API, so
-it has the normal observation, event, and notification behavior. **Retry product
-image** calls the service's authenticated image-only retry API using only the
-last source URL that produced an accepted cached image. A successful retry
-replaces the cached bytes and rotates its private capability atomically; a
-failed retry retains the prior image and changes no watch facts, observations,
-events, or notifications. Both actions use one idempotency key per button
-press. A watch without an accepted image source has an unavailable image-retry
-button. This includes legacy cached images whose
-`product_image_retry_available` flag is false because no source URL was
-persisted.
 
 The `price_watch.reload_image` action remains local-only: it invalidates only
 the selected watch's Home Assistant image cache and causes that ImageEntity to
@@ -217,7 +213,8 @@ bounded operational facts the service itself reports.
 
 ## Schedule checks in Home Assistant
 
-`price_watch.check_all` runs a check when you invoke it. To run it once daily,
+`price_watch.check_watch` runs a deliberate check for one watch when invoked;
+`price_watch.check_all` checks all due watches. To run the due-watch service once daily,
 create a Home Assistant automation such as:
 
 ```yaml

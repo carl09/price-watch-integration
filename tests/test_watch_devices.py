@@ -3,7 +3,6 @@
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from homeassistant.components.button import SERVICE_PRESS
 from homeassistant.const import STATE_UNAVAILABLE
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
@@ -181,6 +180,66 @@ async def test_action_services_register_once_after_setup_and_unregister_on_unloa
         assert not hass.services.has_service(DOMAIN, service)
 
 
+async def test_check_services_call_retained_api_routes_with_keys_and_refresh(hass):
+    """Retained check services still forward their API actions and refresh state."""
+    entry = await _setup_entry(hass, (_watch("watch-one"),))
+    client = hass.data[DOMAIN][DATA_CLIENTS][entry.entry_id]
+    client.async_check_all = AsyncMock()
+    client.async_check_watch = AsyncMock()
+    coordinator = hass.data[DOMAIN][DATA_COORDINATORS][entry.entry_id]
+    coordinator.async_request_refresh = AsyncMock()
+
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_CHECK_ALL,
+        {"idempotency_key": "all-retry-1"},
+        blocking=True,
+    )
+    await hass.services.async_call(
+        DOMAIN,
+        SERVICE_CHECK_WATCH,
+        {"watch_id": "watch-one", "idempotency_key": "watch-retry-1"},
+        blocking=True,
+    )
+
+    client.async_check_all.assert_awaited_once()
+    assert client.async_check_all.await_args.kwargs["idempotency_key"] == "all-retry-1"
+    client.async_check_watch.assert_awaited_once()
+    assert client.async_check_watch.await_args.args == ("watch-one",)
+    assert (
+        client.async_check_watch.await_args.kwargs["idempotency_key"]
+        == "watch-retry-1"
+    )
+    assert coordinator.async_request_refresh.await_count == 2
+    await _unload_entry(hass, entry)
+
+
+async def test_check_service_schemas_reject_missing_watch_and_bad_keys(hass):
+    """Retained service schemas reject invalid calls before API side effects."""
+    entry = await _setup_entry(hass, (_watch("watch-one"),))
+    client = hass.data[DOMAIN][DATA_CLIENTS][entry.entry_id]
+    client.async_check_all = AsyncMock()
+    client.async_check_watch = AsyncMock()
+
+    with pytest.raises(Exception):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_CHECK_WATCH,
+            {"watch_id": "watch-one", "idempotency_key": "bad/key"},
+            blocking=True,
+        )
+    with pytest.raises(Exception):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_CHECK_WATCH,
+            {},
+            blocking=True,
+        )
+    client.async_check_all.assert_not_awaited()
+    client.async_check_watch.assert_not_awaited()
+    await _unload_entry(hass, entry)
+
+
 async def test_failed_entry_setup_does_not_register_action_services(hass):
     """A failed first refresh leaves no callable Price Watch actions."""
     entry = _entry()
@@ -208,61 +267,34 @@ def _entity_id(entity_registry, platform: str, unique_id: str) -> str:
     return entity_id
 
 
-async def test_watch_buttons_run_their_distinct_authenticated_actions(hass):
-    """Each watch button calls only its own API operation and refreshes state."""
-    watch = _watch(
-        "watch-one",
-        product_image_url=(
-            "http://price-watch.test:8787/v1/watches/watch-one/image?token="
-            + "a" * 43
-        ),
-    )
-    entry = await _setup_entry(hass, (watch,))
+async def test_watch_buttons_are_not_created_or_recreated(hass):
+    """Per-watch action buttons and their coordinator lifecycle are removed."""
+    entry = await _setup_entry(hass, (_watch("watch-one"),))
     entity_registry = er.async_get(hass)
-    check_id = _entity_id(entity_registry, "button", "watch_watch-one_check")
-    retry_id = _entity_id(entity_registry, "button", "watch_watch-one_retry_image")
-    client = hass.data[DOMAIN][DATA_CLIENTS][entry.entry_id]
-    client.async_check_watch = AsyncMock()
-    client.async_retry_product_image = AsyncMock()
+
+    assert entity_registry.async_get_entity_id(
+        "button", DOMAIN, "watch_watch-one_check"
+    ) is None
+    assert entity_registry.async_get_entity_id(
+        "button", DOMAIN, "watch_watch-one_retry_image"
+    ) is None
+    assert "watch_button_managers" not in hass.data[DOMAIN]
+
     coordinator = hass.data[DOMAIN][DATA_COORDINATORS][entry.entry_id]
-    coordinator.async_request_refresh = AsyncMock()
-
-    await hass.services.async_call(
-        "button", SERVICE_PRESS, {"entity_id": check_id}, blocking=True
+    coordinator.async_set_updated_data(
+        PriceWatchCoordinatorData(
+            summary=_summary("watch-one"),
+            watches=(_watch("watch-one"), _watch("watch-two")),
+            events=(),
+        )
     )
-    client.async_check_watch.assert_awaited_once()
-    assert client.async_check_watch.await_args.args == ("watch-one",)
-    client.async_retry_product_image.assert_not_awaited()
-    coordinator.async_request_refresh.assert_awaited_once()
-
-    coordinator.async_request_refresh.reset_mock()
-    await hass.services.async_call(
-        "button", SERVICE_PRESS, {"entity_id": retry_id}, blocking=True
-    )
-    client.async_retry_product_image.assert_awaited_once()
-    assert client.async_retry_product_image.await_args.args == ("watch-one",)
-    client.async_check_watch.assert_awaited_once()
-    coordinator.async_request_refresh.assert_awaited_once()
-    await _unload_entry(hass, entry)
-
-
-async def test_watch_image_retry_button_is_unavailable_without_accepted_image(hass):
-    """Image retry cannot be pressed when the service has no accepted source."""
-    entry = await _setup_entry(
-        hass,
-        (
-            _watch(
-                "watch-one",
-                product_image_url=(
-                    "http://price-watch.test:8787/v1/watches/watch-one/image?token="
-                    + "a" * 43
-                ),
-                product_image_retry_available=False,
-            ),
-        ),
-    )
-    entity_id = _entity_id(er.async_get(hass), "button", "watch_watch-one_retry_image")
-    assert hass.states.get(entity_id).state == STATE_UNAVAILABLE
+    await hass.async_block_till_done()
+    assert entity_registry.async_get_entity_id(
+        "button", DOMAIN, "watch_watch-two_check"
+    ) is None
+    assert entity_registry.async_get_entity_id(
+        "button", DOMAIN, "watch_watch-two_retry_image"
+    ) is None
     await _unload_entry(hass, entry)
 
 
@@ -498,8 +530,6 @@ async def test_two_watches_create_distinct_devices_and_linked_entities(hass):
             ("image", f"watch_{watch.id}_product_image"),
             ("number", f"watch_{watch.id}_target_price_control"),
             ("switch", f"watch_{watch.id}_enabled"),
-            ("button", f"watch_{watch.id}_check"),
-            ("button", f"watch_{watch.id}_retry_image"),
             ("binary_sensor", f"watch_{watch.id}_target_match"),
         ):
             entity_id = _entity_id(entity_registry, platform, unique_id)
